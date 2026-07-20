@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import numpy as np
-
 from .features import extract_features
-from .profiles import GROUPS, group_score
+from .profiles import FEATURE_GROUPS, group_score
 from .weights import load_weight_payload
 
 
@@ -17,10 +15,11 @@ def score_candidate(numbers: list[int], profile: dict, weights: dict[str, float]
 
     features = extract_features(numbers)
     components = {}
-    for group in GROUPS:
+    groups = list(FEATURE_GROUPS.keys())
+    for group in groups:
         components[group] = group_score(features, profile, group, recent=(group == "recent"))
 
-    hybrid = float(sum(float(weights.get(group, 0.0)) * components[group] for group in GROUPS))
+    hybrid = float(sum(float(weights.get(group, 0.0)) * components[group] for group in groups))
     return {
         "numbers": numbers,
         "features": features,
