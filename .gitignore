@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# local data/cache
+data/*.xlsx
+data/*.xls
+data/cache/*.json
+
+# streamlit
+.streamlit/secrets.toml
