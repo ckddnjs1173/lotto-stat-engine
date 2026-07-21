@@ -19,22 +19,17 @@ def score_candidate(numbers: list[int], profile: dict, weights: dict[str, float]
     for group in groups:
         components[group] = group_score(features, profile, group, recent=(group == "recent"))
 
-    hybrid = float(sum(float(weights.get(group, 0.0)) * components[group] for group in groups))
+    prediction_score = float(sum(float(weights.get(group, 0.0)) * components[group] for group in groups))
+    rounded = round(prediction_score, 4)
     return {
         "numbers": numbers,
         "features": features,
         "components": components,
-        "score": round(hybrid, 4),
+        "prediction_score": rounded,
+        # 구버전 UI/출력 호환용 alias입니다. 의미는 prediction_score와 같습니다.
+        "score": rounded,
     }
 
 
 def score_candidates(candidates: list[list[int]], profile: dict, weights: dict[str, float]) -> list[dict]:
     return [score_candidate(candidate, profile, weights) for candidate in candidates]
-
-
-def adjusted_for_overlap(item: dict, selected: list[dict]) -> float:
-    if not selected:
-        return float(item["score"])
-    nums = set(item["numbers"])
-    overlap_penalty = sum(len(nums & set(other["numbers"])) for other in selected) * 2.5
-    return float(item["score"]) - overlap_penalty
