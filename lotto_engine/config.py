@@ -18,4 +18,18 @@ RECENT_WINDOW = 20
 # 개인 PC에서 먼저 돌릴 수 있도록 과하게 크게 잡지 않습니다.
 BASELINE_SAMPLE_COUNT = 2_000
 
-# 최종 추천에서 전체 8,145
+# 최종 추천에서 전체 8,145,060개 조합을 전수 평가할지 여부입니다.
+DEFAULT_EXHAUSTIVE_RECOMMENDATION = True
+TOP_K_RECOMMENDATIONS = 10
+
+BASE_WEIGHTS = {
+    "sum": 0.15,
+    "odd_even": 0.15,
+    "section": 0.15,
+    "gap": 0.12,
+    "entropy": 0.13,
+    "consecutive": 0.08,
+    "ending": 0.07,
+    "recent": 0.05,
+    "cluster": 0.10,
+}
