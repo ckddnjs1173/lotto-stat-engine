@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
 
-from .config import NUMBER_COLUMNS, RECENT_WINDOW
+from .config import RECENT_WINDOW
 from .features import extract_features, structure_type
 from .loader import row_numbers
 
@@ -15,10 +14,10 @@ FEATURE_GROUPS = {
     "odd_even": ["odd_count", "even_count"],
     "section": ["section_1", "section_2", "section_3", "section_4", "section_5"],
     "gap": ["avg_gap", "min_gap", "max_gap", "gap_std", "range"],
-    "entropy": ["ending_digit_entropy"],
+    "entropy": ["ending_digit_entropy", "section_entropy", "low_mid_high_entropy", "gap_entropy"],
     "consecutive": ["consecutive_pairs", "max_consecutive_run"],
     "ending": ["duplicate_endings"],
-    "recent": ["sum", "odd_count", "gap_std", "ending_digit_entropy"],
+    "recent": ["sum", "odd_count", "gap_std", "ending_digit_entropy", "section_entropy", "gap_entropy"],
     "cluster": [],
 }
 
@@ -47,12 +46,16 @@ def build_profile(df: pd.DataFrame) -> dict:
     total = max(1, sum(structure_counts.values()))
     structure_probs = {key: value / total for key, value in structure_counts.items()}
 
-    sums = feature_df["sum"].to_numpy(dtype=float)
-    if len(sums) >= 100:
-        sum_min = float(np.percentile(sums, 1))
-        sum_max = float(np.percentile(sums, 99))
-    else:
-        sum_min, sum_max = 70.0, 190.0
+    quantiles = {}
+    for col in numeric_cols:
+        values = feature_df[col].to_numpy(dtype=float)
+        quantiles[col] = {
+            "p01": float(np.percentile(values, 1)) if len(values) >= 100 else float(np.min(values)),
+            "p05": float(np.percentile(values, 5)) if len(values) >= 100 else float(np.min(values)),
+            "p50": float(np.percentile(values, 50)),
+            "p95": float(np.percentile(values, 95)) if len(values) >= 100 else float(np.max(values)),
+            "p99": float(np.percentile(values, 99)) if len(values) >= 100 else float(np.max(values)),
+        }
 
     return {
         "feature_frame": feature_df,
@@ -61,13 +64,13 @@ def build_profile(df: pd.DataFrame) -> dict:
         "recent_means": recent_means,
         "recent_stds": recent_stds,
         "structure_probs": structure_probs,
-        "sum_min": sum_min,
-        "sum_max": sum_max,
+        "quantiles": quantiles,
         "latest_round": int(df["회차"].max()),
     }
 
 
 def similarity(value: float, mean: float, std: float) -> float:
+    """Profile 적합도 점수입니다. 낮아도 탈락시키지 않고 점수만 낮춥니다."""
     std = max(float(std), 1e-6)
     z = abs(float(value) - float(mean)) / std
     return max(0.0, 100.0 - z * 22.0)
