@@ -12,7 +12,7 @@ from lotto_engine.recommender import generate_recommendations, print_recommendat
 
 def main() -> None:
     try:
-        payload = generate_recommendations(seed_offset=0, candidate_count=DEFAULT_CANDIDATE_COUNT)
+        payload = generate_recommendations(seed_offset=0, candidate_count=DEFAULT_CANDIDATE_COUNT, exhaustive=True)
     except (LottoDataError, ValueError) as exc:
         print(f"추천 실패: {exc}")
         raise SystemExit(1)
