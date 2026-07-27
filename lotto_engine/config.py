@@ -33,3 +33,9 @@ BASE_WEIGHTS = {
     "recent": 0.05,
     "cluster": 0.10,
 }
+
+# 운의 영향이 큰 feature가 백테스트 한 번의 우위로 전체 계산식을 지배하지 못하게 하는 안전장치입니다.
+# 홀짝은 참고 feature로 유지하되, 최종 prediction_score 기여도는 최대 10%로 제한합니다.
+WEIGHT_CAPS = {
+    "odd_even": 0.10,
+}
