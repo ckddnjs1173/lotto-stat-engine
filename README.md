@@ -1,98 +1,72 @@
-# Lotto Stat Engine
+# Lotto Stat Engine v2.3
 
-한국 로또 6/45 과거 당첨번호 데이터를 기반으로 10게임 추천번호를 생성하는 통계 엔진입니다.
+6/45의 모든 `8,145,060`개 조합을 제거 없이 평가하는 mixed-structure prediction engine입니다.
+보너스 번호, 공동당첨 회피, 인기번호 회피는 평가에 사용하지 않습니다.
 
-## 중요한 안내
+> `prediction_score`는 실제 당첨확률이 아니라 내부 예측확률점수입니다.
 
-로또 6/45의 모든 6개 조합은 공정한 독립 시행에서 1등 확률이 동일합니다. 이 프로그램은 당첨을 보장하지 않으며, 당첨 확률 상승을 보장하지 않습니다. 목적은 과거 당첨번호의 구조적 특성을 참고해 10게임 번호 포트폴리오를 생성하는 것입니다.
-
-## 계산 원칙
-
-- 번호 적중 개수 예측이 아니라 구조 feature 설명력을 평가합니다.
-- 1~100회 데이터로 101회 구조를 평가하고, 1~101회 데이터로 102회 구조를 평가하는 워크포워드 방식을 사용합니다.
-- base weight 70% + walk-forward learned weight 30%를 혼합합니다.
-- 보너스 번호, 동반 출현 관계성, 공동 당첨 위험 회피, 생일 번호 회피, 인기 번호 회피는 점수에 넣지 않습니다.
-- Weighted Luck에는 점수 하한선을 두지 않습니다. 단, hard filter는 통과해야 합니다.
-
-## 데이터 파일
-
-아래 경로에 엑셀 파일을 넣어야 합니다.
+## v2.2 score
 
 ```text
-data/lotto.xlsx
+prediction_score =
+outlier_survival_score * 0.45
++ type_balance_score * 0.25
++ transition_score * 0.15
++ normal_structure_score * 0.15
 ```
 
-필수 컬럼:
+`historical_pattern_score` and `number_dynamics_score` remain diagnostic
+components, but their final weight is zero because their actual-vs-random
+backtest percentiles did not beat the random baseline.
+
+- `normal_structure_score`: 기존 weighted structure score
+- `outlier_survival_score`: 역사적으로 생존한 특이 패턴의 지지도
+- `historical_pattern_score`: 패턴 flag 및 count의 역대 분포 적합도
+- `type_balance_score`: normal/mixed/outlier 한 유형의 점수 독점 완화
+- `transition_score`: 직전 회차 유형에서 다음 유형으로의 역사적 전이
+- `number_dynamics_score`: 번호별 장기·최근 출현 및 미출현 기간 동역학
+
+어떤 component도 조합을 제외하는 hard filter로 사용하지 않습니다.
+
+## v2.3 mixed-slot score
+
+Mixed portfolio slots are ranked against the exact distribution of all
+`8,145,060` valid combinations:
 
 ```text
-회차, 번호1, 번호2, 번호3, 번호4, 번호5, 번호6
+mixed_slot_score =
+0.35 * mixed_lift_score
++ 0.25 * mixed_interaction_score
++ 0.20 * normal_backbone_score
++ 0.15 * controlled_extreme_score
++ 0.05 * recency_consistency_score
 ```
 
-선택 컬럼:
-
-```text
-보너스, 추첨일
-```
-
-## 설치
-
-Windows PowerShell 기준입니다.
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-실행 정책 에러가 나오면 한 번만 실행합니다.
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-.\.venv\Scripts\Activate.ps1
-```
+Single-feature and supported interaction lifts use Bayesian smoothing.
+The backbone uses historical mixed-draw medians and MADs. Transition scores do
+not rank candidates inside mixed slots; they are used for portfolio allocation.
+For a latest outlier draw, the allocation is normal 2 / mixed 6 / outlier 2.
 
 ## 실행
 
-데이터 검증:
-
 ```powershell
 python scripts\validate_data.py
-```
-
-워크포워드 백테스트:
-
-```powershell
-python scripts\run_backtest.py
-```
-
-추천번호 생성:
-
-```powershell
 python scripts\run_recommend.py
+python scripts\run_backtest.py
+python scripts\run_mixed_backtest.py
 ```
 
-또는:
+분석 도구:
 
 ```powershell
-python main.py
+python scripts\analyze_pattern_types.py
+python scripts\analyze_draw_transitions.py
+python scripts\analyze_number_dynamics.py
+python scripts\diagnose_prediction_failures.py --rounds 100 --baseline-samples 500
 ```
 
-Streamlit 앱:
+테스트:
 
 ```powershell
-streamlit run streamlit_app.py
+python -m unittest discover -s tests -v
 ```
-
-## 추천 전략
-
-1. Core Structure
-2. Core Structure
-3. Balanced Structure
-4. High Entropy
-5. Wide Gap
-6. Recent Soft Match
-7. Cluster Diversity
-8. Weighted Luck
-9. Weighted Luck
-10. Coverage Optimizer
