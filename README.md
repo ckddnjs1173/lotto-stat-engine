@@ -1,4 +1,4 @@
-# Lotto Stat Engine v2.3
+# Lotto Stat Engine v2.4.1
 
 6/45의 모든 `8,145,060`개 조합을 제거 없이 평가하는 mixed-structure prediction engine입니다.
 보너스 번호, 공동당첨 회피, 인기번호 회피는 평가에 사용하지 않습니다.
@@ -47,6 +47,16 @@ The backbone uses historical mixed-draw medians and MADs. Transition scores do
 not rank candidates inside mixed slots; they are used for portfolio allocation.
 For a latest outlier draw, the allocation is normal 2 / mixed 6 / outlier 2.
 
+## v2.4 mixed subtype analysis
+
+The v2.4 analysis layer tags every historical draw and candidate with structural
+mixed subtypes. It derives the latest and target draw from `data/lotto.xlsx`,
+and keeps the v2.3.1 recommendation score unchanged. The exact all-combination
+mixed-subtype baseline is versioned and cached under `data/cache`.
+
+v2.4.1 keeps those definitions and the v2.3.1 ranking score unchanged, while
+making subtype allocation lift-, information-, recency-, and signature-aware.
+
 ## 실행
 
 ```powershell
@@ -54,6 +64,7 @@ python scripts\validate_data.py
 python scripts\run_recommend.py
 python scripts\run_backtest.py
 python scripts\run_mixed_backtest.py
+python scripts\analyze_mixed_subtypes.py
 ```
 
 분석 도구:

@@ -15,6 +15,7 @@ from .mixed_scoring import (
     score_mixed_record,
     structure_record,
 )
+from .mixed_subtypes import build_historical_subtype_records, latest_target_draw, suggest_mixed_subtype_allocation
 from .profiles import build_profile
 from .scoring import score_candidate, score_candidates
 from .weights import load_weight_payload
@@ -182,6 +183,7 @@ def generate_recommendations(
     df = load_lotto_data()
     profile = build_profile(df)
     records = build_draw_structure_records(df)
+    subtype_records = build_historical_subtype_records(df)
     mixed_profile = build_mixed_profile(records, build_all_combination_baseline())
     weight_payload = load_weight_payload()
     if weight_payload is None or "final_weights" not in weight_payload:
@@ -189,6 +191,7 @@ def generate_recommendations(
     weights = weight_payload["final_weights"]
 
     latest_round = int(profile["latest_round"])
+    latest_draw, target_draw = latest_target_draw(df)
     seed = make_seed(latest_round, seed_offset)
 
     if exhaustive:
@@ -207,6 +210,8 @@ def generate_recommendations(
         "meta": {
             "latest_round": latest_round,
             "target_round": latest_round + 1,
+            "latest_draw": latest_draw,
+            "target_draw": target_draw,
             "seed": seed,
             "seed_offset": seed_offset,
             "candidate_count": candidate_count,
@@ -214,8 +219,10 @@ def generate_recommendations(
             "recommendation_mode": mode,
             "weight_mode": "component backtest calibrated fixed blend",
             "mixed_model_version": "v2.3.1",
+            "analysis_version": "v2.4.1",
             "portfolio_allocation": allocation,
             "mixed_diagnostics": _mixed_diagnostics([item for item in recommendations if item["pattern_type"] == "mixed"]),
+            "mixed_subtype_allocation_suggestion": suggest_mixed_subtype_allocation(subtype_records),
             "score_name": "prediction_score",
             "score_disclaimer": "prediction_score는 실제 당첨확률이 아니라 내부 예측확률점수입니다.",
         },
@@ -228,10 +235,10 @@ def generate_recommendations(
 def print_recommendations(payload: dict) -> None:
     meta = payload["meta"]
     print("=" * 72)
-    print("LOTTO STAT ENGINE v2.3.1 - PORTFOLIO MIXED-SLOT")
+    print("LOTTO STAT ENGINE v2.4.1 - LIFT-AWARE MIXED SUBTYPE ANALYSIS")
     print("=" * 72)
-    print(f"최신 반영 회차: {meta['latest_round']}")
-    print(f"예측 대상 회차: {meta['target_round']}")
+    print(f"latest reflected draw: {meta['latest_draw']}")
+    print(f"target draw: {meta['target_draw']}")
     print(f"평가 방식: {meta['recommendation_mode']}")
     print(f"평가 조합 수: {meta['evaluated_count']}")
     print(f"가중치 방식: {meta['weight_mode']}")
@@ -244,6 +251,7 @@ def print_recommendations(payload: dict) -> None:
     print(f"average pairwise number overlap: {diagnostics['average_pairwise_number_overlap']:.4f}")
     print(f"max repeated number frequency: {diagnostics['max_repeated_number_frequency']}")
     print(f"mixed diversity penalty applied: {'yes' if diagnostics['mixed_diversity_penalty_applied'] else 'no'}")
+    print(f"mixed subtype allocation suggestion: {meta['mixed_subtype_allocation_suggestion']}")
 
     for idx, item in enumerate(payload["recommendations"], 1):
         f = item["features"]
@@ -257,6 +265,8 @@ def print_recommendations(payload: dict) -> None:
             print(f"mixed_slot_score: {item['mixed_slot_score']:.4f}")
             print(f"extreme_count: {item['extreme_count']}")
             print(f"extreme_signature: {', '.join(item['extreme_signature'])}")
+            print(f"subtype_tags: {', '.join(item['subtype_tags']) or 'none'}")
+            print(f"subtype_signature: {item['subtype_signature']}")
         print("score breakdown:")
         for key, value in item["score_breakdown"].items():
             print(f"  {key}: {value:.4f}")

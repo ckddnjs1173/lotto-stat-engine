@@ -1,0 +1,301 @@
+from __future__ import annotations
+
+import json
+import math
+from collections import Counter
+from functools import lru_cache
+from itertools import combinations
+from pathlib import Path
+
+from .config import CACHE_DIR, ROUND_COLUMN
+from .features import pattern_type
+from .loader import row_numbers
+
+SUBTYPE_DEFINITION_VERSION = "v2.4.0"
+SUBTYPE_BASELINE_PATH = CACHE_DIR / "mixed_subtype_baseline_v240.json"
+SUBTYPE_ORDER = (
+    "parity_extreme",
+    "parity_skew",
+    "gap_bridge",
+    "section_hole",
+    "sum_edge",
+    "range_edge",
+    "ending_duplicate",
+    "consecutive_anchor",
+    "low_high_split",
+    "high_cluster",
+    "low_cluster",
+    "compound_mixed",
+)
+BACKGROUND_SUBTYPES = frozenset({"section_hole", "consecutive_anchor", "compound_mixed"})
+
+
+def latest_target_draw(df) -> tuple[int, int]:
+    latest = int(df[ROUND_COLUMN].max())
+    return latest, latest + 1
+
+
+def subtype_record(numbers) -> dict:
+    nums = tuple(sorted(int(number) for number in numbers))
+    if len(nums) != 6 or len(set(nums)) != 6 or nums[0] < 1 or nums[-1] > 45:
+        raise ValueError("A subtype record requires six unique numbers from 1 through 45.")
+    gaps = tuple(b - a for a, b in zip(nums, nums[1:]))
+    odd_count = sum(number % 2 for number in nums)
+    total = sum(nums)
+    number_range = nums[-1] - nums[0]
+    max_gap = max(gaps)
+    sections = tuple(sum(lo <= number <= hi for number in nums) for lo, hi in (
+        (1, 10), (11, 20), (21, 30), (31, 40), (41, 45)
+    ))
+    low, mid, high = (
+        sum(1 <= number <= 15 for number in nums),
+        sum(16 <= number <= 30 for number in nums),
+        sum(31 <= number <= 45 for number in nums),
+    )
+    endings = Counter(number % 10 for number in nums)
+    ending_duplicates = sum(count - 1 for count in endings.values() if count > 1)
+    consecutive_pairs = sum(gap == 1 for gap in gaps)
+    feature_proxy = {
+        "odd_even_extreme": int(odd_count in {0, 1, 5, 6}),
+        "sum_extreme": int(total <= 90 or total >= 185),
+        "range_narrow": int(number_range <= 20),
+        "range_wide": int(number_range >= 41),
+        "max_gap_extreme": int(max_gap >= 20),
+        "has_consecutive_pairs": int(consecutive_pairs > 0),
+        "empty_section_count": sum(count == 0 for count in sections),
+    }
+    tags = []
+    checks = {
+        "parity_skew": odd_count in {1, 5},
+        "parity_extreme": odd_count in {0, 6},
+        "gap_bridge": max_gap >= 20,
+        "section_hole": any(count == 0 for count in sections),
+        "sum_edge": total <= 105 or total >= 170,
+        "range_edge": number_range <= 20 or number_range >= 42,
+        "ending_duplicate": ending_duplicates >= 2,
+        "consecutive_anchor": consecutive_pairs >= 1,
+        "low_high_split": low >= 1 and high >= 1 and mid <= 1,
+        "high_cluster": high >= 3,
+        "low_cluster": low >= 3,
+    }
+    tags.extend(tag for tag in SUBTYPE_ORDER if tag != "compound_mixed" and checks[tag])
+    if len(tags) >= 3:
+        tags.append("compound_mixed")
+    ordered_tags = tuple(tag for tag in SUBTYPE_ORDER if tag in tags)
+    primary = next((tag for tag in SUBTYPE_ORDER if tag != "compound_mixed" and tag in ordered_tags), "untyped_mixed")
+    if max_gap >= 20:
+        gap_shape = "bridge"
+    elif consecutive_pairs >= 2:
+        gap_shape = "anchored_multi"
+    elif consecutive_pairs == 1:
+        gap_shape = "anchored_single"
+    else:
+        gap_shape = "distributed"
+    if high >= 3 and low >= 3:
+        cluster_shape = "low_high_dual"
+    elif high >= 3:
+        cluster_shape = "high_cluster"
+    elif low >= 3:
+        cluster_shape = "low_cluster"
+    elif mid <= 1 and low and high:
+        cluster_shape = "low_high_split"
+    else:
+        cluster_shape = "distributed"
+    return {
+        "numbers": nums,
+        "pattern_type": pattern_type(feature_proxy),
+        "subtype_tags": ordered_tags,
+        "primary_subtype": primary,
+        "subtype_signature": "+".join(ordered_tags) if ordered_tags else "none",
+        "cluster_shape": cluster_shape,
+        "gap_shape": gap_shape,
+    }
+
+
+def build_historical_subtype_records(df) -> list[dict]:
+    return [
+        {**subtype_record(row_numbers(row)), "draw_no": int(row[ROUND_COLUMN])}
+        for _, row in df.iterrows()
+    ]
+
+
+def _summarize(records: list[dict]) -> dict:
+    mixed = [record for record in records if record["pattern_type"] == "mixed"]
+    tags = Counter(tag for record in mixed for tag in record["subtype_tags"])
+    primary = Counter(record["primary_subtype"] for record in mixed)
+    signatures = Counter(record["subtype_signature"] for record in mixed)
+    cooccurrence = Counter()
+    for record in mixed:
+        for left, right in combinations(record["subtype_tags"], 2):
+            cooccurrence[f"{left}|{right}"] += 1
+    return {
+        "mixed_total": len(mixed),
+        "tag_counts": dict(tags),
+        "primary_counts": dict(primary),
+        "signature_counts": dict(signatures),
+        "cooccurrence_counts": dict(cooccurrence),
+    }
+
+
+@lru_cache(maxsize=1)
+def build_exact_mixed_subtype_baseline(cache_path: Path = SUBTYPE_BASELINE_PATH) -> dict:
+    if cache_path.exists():
+        with cache_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if payload.get("definition_version") == SUBTYPE_DEFINITION_VERSION and payload.get("combination_total") == math.comb(45, 6):
+            return payload
+    mixed_total = 0
+    tags: Counter = Counter()
+    primary: Counter = Counter()
+    signatures: Counter = Counter()
+    cooccurrence: Counter = Counter()
+    for combo in combinations(range(1, 46), 6):
+        record = subtype_record(combo)
+        if record["pattern_type"] != "mixed":
+            continue
+        mixed_total += 1
+        tags.update(record["subtype_tags"])
+        primary[record["primary_subtype"]] += 1
+        signatures[record["subtype_signature"]] += 1
+        cooccurrence.update(f"{left}|{right}" for left, right in combinations(record["subtype_tags"], 2))
+    summary = {
+        "mixed_total": mixed_total,
+        "tag_counts": dict(tags),
+        "primary_counts": dict(primary),
+        "signature_counts": dict(signatures),
+        "cooccurrence_counts": dict(cooccurrence),
+    }
+    payload = {
+        "definition_version": SUBTYPE_DEFINITION_VERSION,
+        "combination_total": math.comb(45, 6),
+        **summary,
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with cache_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+    return payload
+
+
+def _allocate_scores(scores: dict[str, float], slots: int, max_per_item: int = 2) -> dict[str, int]:
+    allocated = {key: 0 for key in scores}
+    for _ in range(slots):
+        eligible = [key for key in scores if allocated[key] < max_per_item]
+        if not eligible:
+            break
+        # Diminishing returns keep an informative family represented without
+        # allowing one structural descriptor to absorb the portfolio.
+        chosen = max(eligible, key=lambda key: (scores[key] / (allocated[key] + 1), scores[key], key))
+        allocated[chosen] += 1
+    return {key: value for key, value in allocated.items() if value}
+
+
+def subtype_information_diagnostics(records: list[dict], baseline: dict | None = None) -> dict[str, dict]:
+    mixed = [record for record in records if record["pattern_type"] == "mixed"]
+    recent_300 = [record for record in records[-300:] if record["pattern_type"] == "mixed"]
+    recent_100 = [record for record in records[-100:] if record["pattern_type"] == "mixed"]
+    baseline = baseline or build_exact_mixed_subtype_baseline()
+    full_counts = Counter(tag for record in mixed for tag in record["subtype_tags"])
+    counts_300 = Counter(tag for record in recent_300 for tag in record["subtype_tags"])
+    counts_100 = Counter(tag for record in recent_100 for tag in record["subtype_tags"])
+    result = {}
+    for tag in SUBTYPE_ORDER:
+        support = full_counts[tag]
+        historical_ratio = support / max(1, len(mixed))
+        baseline_ratio = baseline["tag_counts"].get(tag, 0) / max(1, baseline["mixed_total"])
+        lift = historical_ratio / baseline_ratio if baseline_ratio else 0.0
+        ratio_300 = counts_300[tag] / max(1, len(recent_300))
+        ratio_100 = counts_100[tag] / max(1, len(recent_100))
+        recent_ratio = 0.4 * ratio_300 + 0.6 * ratio_100
+        recent_trend = recent_ratio / historical_ratio if historical_ratio else 0.0
+        cooccurrence_support = (
+            sum(sum(other in record["subtype_tags"] for other in SUBTYPE_ORDER if other not in {tag, "compound_mixed"}) > 0
+                for record in mixed if tag in record["subtype_tags"]) / max(1, support)
+        )
+        signature_counts = Counter(record["subtype_signature"] for record in mixed if tag in record["subtype_tags"])
+        signature_support = max(signature_counts.values(), default=0) / max(1, support)
+        reliability = min(1.0, math.sqrt(support / 25.0))
+        information_score = historical_ratio * abs(math.log2(max(lift, 1e-12))) * reliability
+        result[tag] = {
+            "historical_ratio": historical_ratio,
+            "baseline_ratio": baseline_ratio,
+            "lift": lift,
+            "information_score": information_score,
+            "support_count": support,
+            "recent_300_ratio": ratio_300,
+            "recent_100_ratio": ratio_100,
+            "recent_trend": recent_trend,
+            "cooccurrence_support": cooccurrence_support,
+            "signature_support": signature_support,
+        }
+    return result
+
+
+def suggest_mixed_subtype_allocation(records: list[dict], slots: int = 6, baseline: dict | None = None) -> dict[str, int]:
+    if slots <= 0:
+        return {}
+    diagnostics = subtype_information_diagnostics(records, baseline)
+    scores = {}
+    for tag, values in diagnostics.items():
+        positive_lift = max(0.0, math.log2(max(values["lift"], 1e-12)))
+        trend = min(2.0, values["recent_trend"])
+        score = (
+            0.40 * values["information_score"]
+            + 0.25 * values["historical_ratio"] * positive_lift
+            + 0.15 * values["historical_ratio"] * trend
+            + 0.10 * values["historical_ratio"] * values["cooccurrence_support"]
+            + 0.10 * values["historical_ratio"] * values["signature_support"]
+        )
+        if tag in BACKGROUND_SUBTYPES:
+            score *= 0.20
+        if values["support_count"]:
+            scores[tag] = score
+    return _allocate_scores(scores, slots)
+
+
+def suggest_mixed_signature_allocation(records: list[dict], slots: int = 6, baseline: dict | None = None) -> dict[str, int]:
+    if slots <= 0:
+        return {}
+    baseline = baseline or build_exact_mixed_subtype_baseline()
+    mixed = [record for record in records if record["pattern_type"] == "mixed"]
+    recent_300 = [record for record in records[-300:] if record["pattern_type"] == "mixed"]
+    recent_100 = [record for record in records[-100:] if record["pattern_type"] == "mixed"]
+
+    def family(signature: str) -> str:
+        return "+".join(tag for tag in signature.split("+") if tag != "compound_mixed")
+
+    full = Counter(family(record["subtype_signature"]) for record in mixed)
+    count_300 = Counter(family(record["subtype_signature"]) for record in recent_300)
+    count_100 = Counter(family(record["subtype_signature"]) for record in recent_100)
+    baseline_counts = Counter()
+    for signature, count in baseline["signature_counts"].items():
+        baseline_counts[family(signature)] += count
+    minimum_support = max(3, math.ceil(len(mixed) * 0.005))
+    scores = {}
+    for name, support in full.items():
+        if name == "none" or support < minimum_support:
+            continue
+        historical_ratio = support / len(mixed)
+        baseline_ratio = baseline_counts[name] / max(1, baseline["mixed_total"])
+        lift = historical_ratio / baseline_ratio if baseline_ratio else 0.0
+        recent_ratio = (
+            0.4 * count_300[name] / max(1, len(recent_300))
+            + 0.6 * count_100[name] / max(1, len(recent_100))
+        )
+        trend = min(2.0, recent_ratio / historical_ratio) if historical_ratio else 0.0
+        family_tags = name.split("+")
+        informative_tags = sum(tag not in BACKGROUND_SUBTYPES for tag in family_tags)
+        # A lone broad background descriptor is diagnostic context, not a
+        # sufficiently specific portfolio family. Supported combinations of
+        # background descriptors remain eligible.
+        if informative_tags == 0 and len(family_tags) < 2:
+            continue
+        information = historical_ratio * abs(math.log2(max(lift, 1e-12)))
+        support_reliability = min(1.0, math.sqrt(support / 20.0))
+        combination_value = 1.0 + 0.20 * informative_tags + 0.05 * (len(family_tags) - 1)
+        scores[name] = support_reliability * combination_value * (
+            0.45 * information
+            + 0.25 * historical_ratio * max(0.0, math.log2(max(lift, 1e-12)))
+            + 0.20 * historical_ratio * trend
+            + 0.10 * historical_ratio
+        )
+    return _allocate_scores(scores, slots)

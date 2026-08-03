@@ -14,6 +14,7 @@ import pandas as pd
 from .config import CACHE_DIR
 from .features import pattern_type
 from .loader import row_numbers
+from .mixed_subtypes import subtype_record
 
 MIXED_MODEL_VERSION = "v2.3.1"
 BASELINE_CACHE_VERSION = "v2.3"
@@ -127,7 +128,7 @@ def structure_record(
     occupied_lmh = sum(count > 0 for count in lmh)
     normal_backbone_bin = f"coverage_{occupied_sections}_{occupied_lmh}"
 
-    return {
+    record = {
         "numbers": tuple(nums),
         "sum": total,
         "sum_bin": _bin(total, (89, 104, 119, 134, 149, 164, 179)),
@@ -152,6 +153,11 @@ def structure_record(
         "pattern_type": pattern_type(feature_proxy),
         "previous_pattern_type": previous_pattern_type,
     }
+    subtype = subtype_record(nums)
+    record.update({key: subtype[key] for key in (
+        "subtype_tags", "primary_subtype", "subtype_signature", "cluster_shape", "gap_shape"
+    )})
+    return record
 
 
 def build_draw_structure_records(df: pd.DataFrame) -> list[dict]:
@@ -413,6 +419,11 @@ def score_mixed_record(record: dict, profile: dict) -> dict:
         **{key: round(float(value), 4) for key, value in components.items()},
         "extreme_count": record["extreme_count"],
         "extreme_signature": list(record["extreme_signature"]),
+        "subtype_tags": list(record["subtype_tags"]),
+        "primary_subtype": record["primary_subtype"],
+        "subtype_signature": record["subtype_signature"],
+        "cluster_shape": record["cluster_shape"],
+        "gap_shape": record["gap_shape"],
         "pattern_type": record["pattern_type"],
         "structure_record": record,
     }
