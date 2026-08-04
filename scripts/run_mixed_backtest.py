@@ -15,14 +15,19 @@ def main() -> None:
     except (LottoDataError, ValueError) as exc:
         print(f"Mixed backtest failed: {exc}")
         raise SystemExit(1)
-    print("LOTTO STAT ENGINE v2.3.1 - PORTFOLIO MIXED-SLOT WALK-FORWARD BACKTEST")
+    print("LOTTO STAT ENGINE v2.5 - MIXED SUBTYPE ALLOCATION BACKTEST")
     print(payload["score_disclaimer"])
     print(f"mixed target tests: {payload['mixed_tests']}")
     print(f"baseline samples per target: {payload['baseline_samples']}")
-    print(f"mean tie-safe percentile: {payload['mean_percentile']:.4f}%")
-    print(f"median tie-safe percentile: {payload['median_percentile']:.4f}%")
-    print(f"percentile std: {payload['percentile_std']:.4f}")
-    print(f"above-random ratio: {payload['above_random_ratio']:.4f}")
+    for label in ("v231", "v25"):
+        values = payload[label]
+        print(f"{label}: mean={values['mean_percentile']:.4f}%, median={values['median_percentile']:.4f}%, above_random={values['above_random_ratio']:.4f}, std={values['percentile_std']:.4f}")
+    print("RECENT 100/300 STABILITY")
+    for label, values in payload["recent_stability"].items():
+        print(f"{label}: mean={values['mean_percentile']:.4f}%, median={values['median_percentile']:.4f}%, above_random={values['above_random_ratio']:.4f}")
+    print("FAMILY COVERAGE")
+    for family, values in payload["family_coverage"].items():
+        print(f"{family}: target_slots={values['target_slots']}, actual_matches={values['actual_matches']}")
 
 
 if __name__ == "__main__":

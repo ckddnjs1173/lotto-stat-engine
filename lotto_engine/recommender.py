@@ -15,13 +15,25 @@ from .mixed_scoring import (
     score_mixed_record,
     structure_record,
 )
-from .mixed_subtypes import build_historical_subtype_records, latest_target_draw, suggest_mixed_subtype_allocation
+from .mixed_subtypes import (
+    build_exact_mixed_subtype_baseline,
+    build_historical_subtype_records,
+    latest_target_draw,
+    mixed_subtype_fit_components,
+    signature_family_diagnostics,
+    subtype_information_diagnostics,
+    suggest_mixed_signature_allocation,
+    suggest_mixed_subtype_allocation,
+)
 from .profiles import build_profile
 from .scoring import score_candidate, score_candidates
 from .weights import load_weight_payload
 
 MIXED_POOL_MULTIPLIER = 250
 MIXED_DIVERSITY_STRENGTH = 8.0
+MIXED_SUBTYPE_FIT_STRENGTH = 6.0
+MIXED_FAMILY_OVERFILL_PENALTY = 3.0
+MIXED_DUPLICATE_SIGNATURE_PENALTY = 2.0
 
 
 def _mixed_similarity(left: dict, right: dict) -> float:
@@ -43,37 +55,80 @@ def _mixed_similarity(left: dict, right: dict) -> float:
     return sum(weight * float(value) for weight, value in parts)
 
 
-def _select_diverse_mixed(pool: list[dict], quota: int) -> list[dict]:
+def _select_diverse_mixed(
+    pool: list[dict],
+    quota: int,
+    family_allocation: dict[str, int] | None = None,
+    subtype_diagnostics: dict[str, dict] | None = None,
+    family_diagnostics: dict[str, dict] | None = None,
+) -> list[dict]:
+    family_allocation = family_allocation or {}
+    subtype_diagnostics = subtype_diagnostics or {}
+    family_diagnostics = family_diagnostics or {}
     remaining = sorted(pool, key=lambda item: float(item["mixed_slot_score"]), reverse=True)
     selected: list[dict] = []
+    selected_families: Counter = Counter()
+    selected_signatures: Counter = Counter()
     while remaining and len(selected) < quota:
-        best_index = max(range(len(remaining)), key=lambda index: (
-            float(remaining[index]["mixed_slot_score"])
-            - (MIXED_DIVERSITY_STRENGTH * sum(
-                _mixed_similarity(remaining[index], prior) for prior in selected
-            ) / len(selected) if selected else 0.0),
-            float(remaining[index]["mixed_slot_score"]),
-        ))
+        choices = []
+        for index, candidate in enumerate(remaining):
+            fit = mixed_subtype_fit_components(
+                candidate, subtype_diagnostics, family_diagnostics,
+                family_allocation, selected_families,
+            )
+            diversity_penalty = (MIXED_DIVERSITY_STRENGTH * sum(
+                _mixed_similarity(candidate, prior) for prior in selected
+            ) / len(selected) if selected else 0.0)
+            family = fit["selected_family"]
+            overfill_penalty = (
+                MIXED_FAMILY_OVERFILL_PENALTY
+                if selected_families[family] >= family_allocation.get(family, 0) else 0.0
+            )
+            signature_penalty = MIXED_DUPLICATE_SIGNATURE_PENALTY * selected_signatures[candidate["subtype_signature"]]
+            portfolio_score = (
+                float(candidate["mixed_slot_score"])
+                + MIXED_SUBTYPE_FIT_STRENGTH * fit["mixed_subtype_fit_score"] / 100.0
+                - diversity_penalty - overfill_penalty - signature_penalty
+            )
+            choices.append((portfolio_score, float(candidate["mixed_slot_score"]), index, fit,
+                            diversity_penalty, overfill_penalty, signature_penalty))
+        _, _, best_index, fit, penalty, overfill_penalty, signature_penalty = max(choices)
         item = remaining.pop(best_index)
-        penalty = (MIXED_DIVERSITY_STRENGTH * sum(
-            _mixed_similarity(item, prior) for prior in selected
-        ) / len(selected) if selected else 0.0)
+        item.update(fit)
         item["mixed_diversity_penalty"] = round(penalty, 4)
-        item["portfolio_selection_score"] = round(float(item["mixed_slot_score"]) - penalty, 4)
+        item["mixed_family_overfill_penalty"] = round(overfill_penalty, 4)
+        item["mixed_duplicate_signature_penalty"] = round(signature_penalty, 4)
+        item["v25_mixed_slot_score"] = round(
+            0.90 * float(item["mixed_slot_score"]) + 0.10 * fit["mixed_subtype_fit_score"], 4
+        )
+        item["portfolio_selection_score"] = round(
+            float(item["mixed_slot_score"])
+            + MIXED_SUBTYPE_FIT_STRENGTH * fit["mixed_subtype_fit_score"] / 100.0
+            - penalty - overfill_penalty - signature_penalty, 4
+        )
         selected.append(item)
+        selected_families[fit["selected_family"]] += 1
+        selected_signatures[item["subtype_signature"]] += 1
     return selected
 
 
-def _mixed_diagnostics(items: list[dict]) -> dict:
+def _mixed_diagnostics(items: list[dict], family_allocation: dict[str, int] | None = None) -> dict:
     pairs = list(combinations(items, 2))
     overlaps = [len(set(a["numbers"]) & set(b["numbers"])) for a, b in pairs]
     frequencies = Counter(number for item in items for number in item["numbers"])
+    tag_overlaps = [len(set(a["subtype_tags"]) & set(b["subtype_tags"])) for a, b in pairs]
+    selected_families = Counter(item.get("selected_family", "unallocated") for item in items)
     return {
         "unique_extreme_signature_count": len({tuple(i["extreme_signature"]) for i in items}),
         "unique_section_distribution_count": len({tuple(i["structure_record"]["section_distribution"]) for i in items}),
         "average_pairwise_number_overlap": round(sum(overlaps) / len(overlaps), 4) if overlaps else 0.0,
+        "average_subtype_tag_overlap": round(sum(tag_overlaps) / len(tag_overlaps), 4) if tag_overlaps else 0.0,
         "max_repeated_number_frequency": max(frequencies.values(), default=0),
         "mixed_diversity_penalty_applied": any(i.get("mixed_diversity_penalty", 0) > 0 for i in items),
+        "unique_primary_subtype_count": len({item["primary_subtype"] for item in items}),
+        "unique_subtype_signature_count": len({item["subtype_signature"] for item in items}),
+        "family_allocation_target": dict(family_allocation or {}),
+        "family_allocation_selected": dict(selected_families),
     }
 
 
@@ -112,6 +167,9 @@ def _top_portfolio_stream(
     mixed_profile: dict,
     weights: dict[str, float],
     k: int,
+    family_allocation: dict[str, int] | None = None,
+    subtype_diagnostics: dict[str, dict] | None = None,
+    family_diagnostics: dict[str, dict] | None = None,
 ) -> tuple[list[dict], int, dict[str, int]]:
     allocation = _portfolio_allocation(profile["latest_pattern_type"], k)
     heaps: dict[str, list[tuple[float, int, dict]]] = {
@@ -152,7 +210,10 @@ def _top_portfolio_stream(
     selected = []
     for candidate_type in ("normal", "mixed", "outlier"):
         pool = [entry[2] for entry in sorted(heaps[candidate_type], key=lambda value: value[0], reverse=True)]
-        selected.extend(_select_diverse_mixed(pool, allocation[candidate_type]) if candidate_type == "mixed" else pool)
+        selected.extend(_select_diverse_mixed(
+            pool, allocation[candidate_type], family_allocation,
+            subtype_diagnostics, family_diagnostics,
+        ) if candidate_type == "mixed" else pool)
     selected.sort(key=lambda item: (
         0 if item["pattern_type"] == "mixed" else 1,
         -float(item.get("mixed_slot_score", item["prediction_score"])),
@@ -184,6 +245,10 @@ def generate_recommendations(
     profile = build_profile(df)
     records = build_draw_structure_records(df)
     subtype_records = build_historical_subtype_records(df)
+    subtype_baseline = build_exact_mixed_subtype_baseline()
+    family_allocation = suggest_mixed_signature_allocation(subtype_records, baseline=subtype_baseline)
+    subtype_diagnostics = subtype_information_diagnostics(subtype_records, subtype_baseline)
+    family_diagnostics = signature_family_diagnostics(subtype_records, subtype_baseline)
     mixed_profile = build_mixed_profile(records, build_all_combination_baseline())
     weight_payload = load_weight_payload()
     if weight_payload is None or "final_weights" not in weight_payload:
@@ -196,13 +261,15 @@ def generate_recommendations(
 
     if exhaustive:
         recommendations, evaluated_count, allocation = _top_portfolio_stream(
-            iter_all_combinations(), profile, mixed_profile, weights, top_k
+            iter_all_combinations(), profile, mixed_profile, weights, top_k,
+            family_allocation, subtype_diagnostics, family_diagnostics,
         )
         mode = "exhaustive_all_8,145,060"
     else:
         candidates = generate_candidates(candidate_count, seed)
         recommendations, evaluated_count, allocation = _top_portfolio_stream(
-            candidates, profile, mixed_profile, weights, top_k
+            candidates, profile, mixed_profile, weights, top_k,
+            family_allocation, subtype_diagnostics, family_diagnostics,
         )
         mode = "sampled_candidates"
 
@@ -219,9 +286,11 @@ def generate_recommendations(
             "recommendation_mode": mode,
             "weight_mode": "component backtest calibrated fixed blend",
             "mixed_model_version": "v2.3.1",
-            "analysis_version": "v2.4.1",
+            "analysis_version": "v2.5",
             "portfolio_allocation": allocation,
-            "mixed_diagnostics": _mixed_diagnostics([item for item in recommendations if item["pattern_type"] == "mixed"]),
+            "mixed_diagnostics": _mixed_diagnostics(
+                [item for item in recommendations if item["pattern_type"] == "mixed"], family_allocation
+            ),
             "mixed_subtype_allocation_suggestion": suggest_mixed_subtype_allocation(subtype_records),
             "score_name": "prediction_score",
             "score_disclaimer": "prediction_score는 실제 당첨확률이 아니라 내부 예측확률점수입니다.",
@@ -235,7 +304,7 @@ def generate_recommendations(
 def print_recommendations(payload: dict) -> None:
     meta = payload["meta"]
     print("=" * 72)
-    print("LOTTO STAT ENGINE v2.4.1 - LIFT-AWARE MIXED SUBTYPE ANALYSIS")
+    print("LOTTO STAT ENGINE v2.5 - MIXED SUBTYPE ALLOCATION")
     print("=" * 72)
     print(f"latest reflected draw: {meta['latest_draw']}")
     print(f"target draw: {meta['target_draw']}")
@@ -249,6 +318,11 @@ def print_recommendations(payload: dict) -> None:
     print(f"unique extreme_signature count: {diagnostics['unique_extreme_signature_count']}")
     print(f"unique section_distribution count: {diagnostics['unique_section_distribution_count']}")
     print(f"average pairwise number overlap: {diagnostics['average_pairwise_number_overlap']:.4f}")
+    print(f"average subtype tag overlap: {diagnostics['average_subtype_tag_overlap']:.4f}")
+    print(f"unique primary_subtype count: {diagnostics['unique_primary_subtype_count']}")
+    print(f"unique subtype_signature count: {diagnostics['unique_subtype_signature_count']}")
+    print(f"family allocation target: {diagnostics['family_allocation_target']}")
+    print(f"family allocation selected: {diagnostics['family_allocation_selected']}")
     print(f"max repeated number frequency: {diagnostics['max_repeated_number_frequency']}")
     print(f"mixed diversity penalty applied: {'yes' if diagnostics['mixed_diversity_penalty_applied'] else 'no'}")
     print(f"mixed subtype allocation suggestion: {meta['mixed_subtype_allocation_suggestion']}")
@@ -267,9 +341,14 @@ def print_recommendations(payload: dict) -> None:
             print(f"extreme_signature: {', '.join(item['extreme_signature'])}")
             print(f"subtype_tags: {', '.join(item['subtype_tags']) or 'none'}")
             print(f"subtype_signature: {item['subtype_signature']}")
+            print(f"selected_family: {item['selected_family']}")
+            print(f"mixed_subtype_fit_score: {item['mixed_subtype_fit_score']:.4f}")
         print("score breakdown:")
         for key, value in item["score_breakdown"].items():
             print(f"  {key}: {value:.4f}")
+        if item["pattern_type"] == "mixed":
+            for key in ("family_match_score", "subtype_information_score", "signature_support_score", "family_allocation_fit_score"):
+                print(f"  {key}: {item[key]:.4f}")
         if item["pattern_type"] == "mixed":
             print(
                 f"sum={f['sum']}, odd={f['odd_count']}, even={6 - f['odd_count']}, "

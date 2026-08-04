@@ -299,3 +299,78 @@ def suggest_mixed_signature_allocation(records: list[dict], slots: int = 6, base
             + 0.10 * historical_ratio
         )
     return _allocate_scores(scores, slots)
+
+
+def signature_family(signature: str) -> str:
+    return "+".join(tag for tag in signature.split("+") if tag != "compound_mixed")
+
+
+def signature_family_diagnostics(records: list[dict], baseline: dict | None = None) -> dict[str, dict]:
+    baseline = baseline or build_exact_mixed_subtype_baseline()
+    mixed = [record for record in records if record["pattern_type"] == "mixed"]
+    full = Counter(signature_family(record["subtype_signature"]) for record in mixed)
+    baseline_counts = Counter()
+    for signature, count in baseline["signature_counts"].items():
+        baseline_counts[signature_family(signature)] += count
+    return {
+        family: {
+            "support_count": support,
+            "historical_ratio": support / max(1, len(mixed)),
+            "baseline_ratio": baseline_counts[family] / max(1, baseline["mixed_total"]),
+        }
+        for family, support in full.items()
+    }
+
+
+def mixed_subtype_fit_components(
+    record: dict,
+    subtype_diagnostics: dict[str, dict],
+    family_diagnostics: dict[str, dict],
+    family_allocation: dict[str, int],
+    selected_family_counts: Counter | None = None,
+) -> dict:
+    selected_family_counts = selected_family_counts or Counter()
+    candidate_tags = set(record["subtype_tags"]) - {"compound_mixed"}
+    best_family = "unallocated"
+    best_match = 0.0
+    for family in family_allocation:
+        family_tags = set(family.split("+"))
+        union = candidate_tags | family_tags
+        match = len(candidate_tags & family_tags) / len(union) if union else 0.0
+        if (match, family) > (best_match, best_family):
+            best_match, best_family = match, family
+    exact_family = signature_family(record["subtype_signature"])
+    if exact_family in family_allocation:
+        best_family, best_match = exact_family, 1.0
+
+    max_information = max((values["information_score"] for values in subtype_diagnostics.values()), default=1.0)
+    information_values = [
+        subtype_diagnostics[tag]["information_score"] / max(max_information, 1e-12)
+        for tag in record["subtype_tags"] if tag in subtype_diagnostics and tag != "compound_mixed"
+    ]
+    information_score = 100.0 * sum(information_values) / max(1, len(information_values))
+    max_support = max((values["support_count"] for values in family_diagnostics.values()), default=1)
+    signature_support = 100.0 * family_diagnostics.get(exact_family, {}).get("support_count", 0) / max_support
+    target = family_allocation.get(best_family, 0)
+    selected = selected_family_counts[best_family]
+    if target and selected < target:
+        allocation_fit = 100.0 * (target - selected) / target
+    elif target:
+        allocation_fit = max(0.0, 20.0 - 10.0 * (selected - target))
+    else:
+        allocation_fit = 0.0
+    family_match = 100.0 * best_match
+    mixed_fit = (
+        0.35 * family_match
+        + 0.25 * information_score
+        + 0.15 * signature_support
+        + 0.25 * allocation_fit
+    )
+    return {
+        "selected_family": best_family,
+        "family_match_score": round(family_match, 4),
+        "subtype_information_score": round(information_score, 4),
+        "signature_support_score": round(signature_support, 4),
+        "family_allocation_fit_score": round(allocation_fit, 4),
+        "mixed_subtype_fit_score": round(mixed_fit, 4),
+    }

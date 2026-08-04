@@ -1,4 +1,4 @@
-# Lotto Stat Engine v2.4.1
+# Lotto Stat Engine v2.5
 
 6/45의 모든 `8,145,060`개 조합을 제거 없이 평가하는 mixed-structure prediction engine입니다.
 보너스 번호, 공동당첨 회피, 인기번호 회피는 평가에 사용하지 않습니다.
@@ -56,6 +56,11 @@ mixed-subtype baseline is versioned and cached under `data/cache`.
 
 v2.4.1 keeps those definitions and the v2.3.1 ranking score unchanged, while
 making subtype allocation lift-, information-, recency-, and signature-aware.
+
+v2.5 integrates the dynamically generated signature-family allocation into the
+final mixed-six portfolio as soft fit bonuses and duplicate/overfill penalties.
+No valid combination is filtered, and the v2.3.1 empirical score remains the
+base ranking component.
 
 ## 실행
 
