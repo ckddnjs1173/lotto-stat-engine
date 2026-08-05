@@ -374,3 +374,56 @@ def mixed_subtype_fit_components(
         "family_allocation_fit_score": round(allocation_fit, 4),
         "mixed_subtype_fit_score": round(mixed_fit, 4),
     }
+def build_family_transition_matrix(records: list[dict], alpha: float = 0.1) -> dict:
+    mixed = [r for r in records if r["pattern_type"] == "mixed"]
+    mixed.sort(key=lambda x: x["draw_no"])
+    
+    transitions = Counter()
+    source_counts = Counter()
+    families = set()
+    
+    for i in range(len(mixed) - 1):
+        source = signature_family(mixed[i]["subtype_signature"])
+        target = signature_family(mixed[i+1]["subtype_signature"])
+        
+        transitions[f"{source}|{target}"] += 1
+        source_counts[source] += 1
+        families.add(source)
+        families.add(target)
+        
+    transition_probs = {}
+    family_list = list(families)
+    vocab_size = len(family_list)
+    
+    for source in family_list:
+        transition_probs[source] = {}
+        denominator = source_counts[source] + alpha * vocab_size
+        
+        for target in family_list:
+            count = transitions.get(f"{source}|{target}", 0)
+            prob = (count + alpha) / denominator
+            transition_probs[source][target] = prob
+            
+    return transition_probs
+
+def calculate_decay_momentum(records: list[dict], decay_rate: float = 0.05) -> dict:
+    mixed = [r for r in records if r["pattern_type"] == "mixed"]
+    if not mixed:
+        return {}
+        
+    mixed.sort(key=lambda x: x["draw_no"])
+    latest_draw = mixed[-1]["draw_no"]
+    momentum = Counter()
+    
+    for record in mixed:
+        family = signature_family(record["subtype_signature"])
+        draw_diff = latest_draw - record["draw_no"]
+        momentum[family] += math.exp(-decay_rate * draw_diff)
+        
+    max_momentum = max(momentum.values()) if momentum else 1.0
+    normalized_momentum = {
+        family: score / max_momentum 
+        for family, score in momentum.items()
+    }
+    
+    return normalized_momentum
