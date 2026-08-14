@@ -374,6 +374,8 @@ def mixed_subtype_fit_components(
         "family_allocation_fit_score": round(allocation_fit, 4),
         "mixed_subtype_fit_score": round(mixed_fit, 4),
     }
+
+
 def _coarse_family(record: dict) -> str:
     return str(record.get("primary_subtype") or record.get("pattern_type") or "none")
 
@@ -389,6 +391,23 @@ def _smoothed_distribution(counts: Counter, vocabulary: list[str], alpha: float)
     if denominator <= 0:
         return {key: 1.0 / max(1, len(vocabulary)) for key in vocabulary}
     return {key: (counts[key] + alpha) / denominator for key in vocabulary}
+
+
+def _shrink_probability(
+    counts: Counter,
+    family: str,
+    parent_probability: float,
+    prior_strength: float,
+) -> float:
+    """Shrink a sparse multinomial row toward its parent distribution."""
+    support = float(sum(counts.values()))
+    strength = max(0.0, float(prior_strength))
+    if support <= 0.0:
+        return float(parent_probability)
+    return float(
+        (counts.get(family, 0) + strength * parent_probability)
+        / (support + strength)
+    )
 
 
 def build_family_transition_matrix(records: list[dict], alpha: float = 0.1) -> dict:
@@ -433,8 +452,13 @@ def calculate_decay_momentum(
     }
 
 
-def build_dynamic_family_model(records: list[dict], alpha: float = 0.1, decay_rate: float = 0.05) -> dict:
-    """Precompute family priors, adjacent transitions, and momentum once per run."""
+def build_dynamic_family_model(
+    records: list[dict],
+    alpha: float = 0.1,
+    decay_rate: float = 0.05,
+    transition_prior_strength: float = 12.0,
+) -> dict:
+    """Precompute adjacent transitions and momentum with hierarchical shrinkage."""
     ordered = sorted(records, key=lambda item: item["draw_no"])
     exact_vocab = sorted({signature_family(item["subtype_signature"]) for item in ordered})
     coarse_vocab = sorted({_coarse_family(item) for item in ordered})
@@ -456,6 +480,7 @@ def build_dynamic_family_model(records: list[dict], alpha: float = 0.1, decay_ra
     )
     return {
         "alpha": alpha,
+        "transition_prior_strength": float(transition_prior_strength),
         "families": exact_vocab,
         "priors": priors,
         "exact_counts": exact_rows,
@@ -471,25 +496,32 @@ def build_dynamic_family_model(records: list[dict], alpha: float = 0.1, decay_ra
 
 
 def family_dynamic_scores(family: str, model: dict) -> tuple[float, float]:
-    """O(1) hierarchical transition/momentum lookup with safe prior fallback."""
+    """Hierarchically shrink type -> coarse -> exact transition evidence."""
     prior = float(model.get("priors", {}).get(family, model.get("alpha", 0.1) /
                   max(1.0, 1.0 + model.get("alpha", 0.1) * len(model.get("families", ())))))
-    alpha = float(model.get("alpha", 0.1))
-    vocabulary_size = max(1, len(model.get("families", ())))
-    row = None
-    for table, source in (
-        (model.get("exact_counts", {}), model.get("latest_family")),
-        (model.get("coarse_counts", {}), model.get("latest_coarse_family")),
-        (model.get("type_counts", {}), model.get("latest_pattern_type")),
-    ):
-        counts = table.get(source, Counter())
-        if sum(counts.values()) > 0:
-            row = counts
-            break
-    transition_probability = (
-        (row.get(family, 0) + alpha) / (sum(row.values()) + alpha * vocabulary_size)
-        if row is not None else prior
+    strength = float(model.get("transition_prior_strength", 12.0))
+
+    type_counts = model.get("type_counts", {}).get(
+        model.get("latest_pattern_type"), Counter()
     )
+    type_probability = _shrink_probability(
+        type_counts, family, prior, strength
+    )
+
+    coarse_counts = model.get("coarse_counts", {}).get(
+        model.get("latest_coarse_family"), Counter()
+    )
+    coarse_probability = _shrink_probability(
+        coarse_counts, family, type_probability, strength
+    )
+
+    exact_counts = model.get("exact_counts", {}).get(
+        model.get("latest_family"), Counter()
+    )
+    transition_probability = _shrink_probability(
+        exact_counts, family, coarse_probability, strength
+    )
+
     transition_score = lift_to_score(transition_probability / max(prior, 1e-12))
     momentum_score = float(model.get("momentum_scores", {}).get(family, 50.0))
     return transition_score, momentum_score
