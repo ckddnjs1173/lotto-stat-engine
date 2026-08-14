@@ -19,11 +19,13 @@ from .mixed_subtypes import (
     build_exact_mixed_subtype_baseline,
     build_historical_subtype_records,
     latest_target_draw,
+    family_dynamic_scores,
     mixed_subtype_fit_components,
     signature_family_diagnostics,
     subtype_information_diagnostics,
     suggest_mixed_signature_allocation,
     suggest_mixed_subtype_allocation,
+    signature_family,
 )
 from .profiles import build_profile
 from .scoring import score_candidate, score_candidates
@@ -117,9 +119,12 @@ def _mixed_diagnostics(items: list[dict], family_allocation: dict[str, int] | No
     overlaps = [len(set(a["numbers"]) & set(b["numbers"])) for a, b in pairs]
     frequencies = Counter(number for item in items for number in item["numbers"])
     tag_overlaps = [len(set(a["subtype_tags"]) & set(b["subtype_tags"])) for a, b in pairs]
-    selected_families = Counter(item.get("selected_family", "unallocated") for item in items)
+    selected_families = Counter(
+        item.get("selected_family", "unallocated")
+        for item in items if item["pattern_type"] == "mixed"
+    )
     return {
-        "unique_extreme_signature_count": len({tuple(i["extreme_signature"]) for i in items}),
+        "unique_extreme_signature_count": len({tuple(i.get("extreme_signature", i["structure_record"]["extreme_signature"])) for i in items}),
         "unique_section_distribution_count": len({tuple(i["structure_record"]["section_distribution"]) for i in items}),
         "average_pairwise_number_overlap": round(sum(overlaps) / len(overlaps), 4) if overlaps else 0.0,
         "average_subtype_tag_overlap": round(sum(tag_overlaps) / len(tag_overlaps), 4) if tag_overlaps else 0.0,
@@ -152,13 +157,51 @@ def _top_k_stream(candidates, profile: dict, weights: dict[str, float], k: int) 
     return top_items, evaluated
 
 
-def _portfolio_allocation(latest_pattern_type: str, top_k: int) -> dict[str, int]:
-    if top_k == 10 and latest_pattern_type == "outlier":
-        return {"normal": 2, "mixed": 6, "outlier": 2}
-    mixed = max(1, round(top_k * 0.60))
-    remaining = top_k - mixed
-    normal = remaining // 2
-    return {"normal": normal, "mixed": mixed, "outlier": remaining - normal}
+def _portfolio_allocation(profile: dict, top_k: int) -> dict[str, int]:
+    probabilities = profile["transition_probs"].get(
+        profile["latest_pattern_type"], profile["pattern_type_probs"]
+    )
+    raw = {key: top_k * probabilities.get(key, 0.0) for key in ("normal", "mixed", "outlier")}
+    allocation = {key: int(value) for key, value in raw.items()}
+    for key in sorted(raw, key=lambda item: raw[item] - allocation[item], reverse=True)[:top_k - sum(allocation.values())]:
+        allocation[key] += 1
+    return allocation
+
+
+def _score_structure_record(record: dict, profile: dict, mixed_profile: dict, weights: dict) -> dict:
+    family = signature_family(record["subtype_signature"])
+    if record["pattern_type"] == "mixed":
+        item = score_mixed_record(record, mixed_profile)
+        item["features"] = record
+        item["prediction_score"] = item["mixed_slot_score"]
+        item["score_breakdown"] = {
+            key: item[key] for key in (
+                "mixed_lift_score", "mixed_interaction_score", "normal_backbone_score",
+                "controlled_extreme_score", "recency_consistency_score",
+            )
+        }
+    else:
+        item = score_candidate(list(record["numbers"]), profile, weights)
+        base_score = float(item["prediction_score"])
+        transition_score, momentum_score = family_dynamic_scores(
+            family, mixed_profile["dynamic_markov_decay"]
+        )
+        item.update({
+            "base_score": round(base_score, 4),
+            "transition_lift_score": round(transition_score, 4),
+            "momentum_lift_score": round(momentum_score, 4),
+            "prediction_score": round(0.70 * base_score + 0.15 * transition_score + 0.15 * momentum_score, 4),
+            "features": record,
+        })
+    item.setdefault("base_score", item.get("mixed_slot_score", item["prediction_score"]))
+    item.setdefault("transition_lift_score", 50.0)
+    item.setdefault("momentum_lift_score", 50.0)
+    item.update({
+        "primary_subtype": record["primary_subtype"], "subtype_tags": list(record["subtype_tags"]),
+        "subtype_signature": record["subtype_signature"], "selected_family": family,
+        "structure_record": record,
+    })
+    return item
 
 
 def _top_portfolio_stream(
@@ -171,57 +214,44 @@ def _top_portfolio_stream(
     subtype_diagnostics: dict[str, dict] | None = None,
     family_diagnostics: dict[str, dict] | None = None,
 ) -> tuple[list[dict], int, dict[str, int]]:
-    allocation = _portfolio_allocation(profile["latest_pattern_type"], k)
-    heaps: dict[str, list[tuple[float, int, dict]]] = {
-        candidate_type: [] for candidate_type in allocation
-    }
+    allocation = _portfolio_allocation(profile, k)
+    heap: list[tuple[float, int, dict]] = []
     evaluated = 0
     for evaluated, candidate in enumerate(candidates, 1):
         record = structure_record(candidate, profile["latest_pattern_type"])
-        candidate_type = record["pattern_type"]
-        quota = allocation.get(candidate_type, 0)
-        if quota <= 0:
-            continue
-        if candidate_type == "mixed":
-            item = score_mixed_record(record, mixed_profile)
-            ranking_score = float(item["mixed_slot_score"])
-            item["features"] = record
-            item["prediction_score"] = ranking_score
-            item["score_breakdown"] = {
-                key: item[key] for key in (
-                    "mixed_lift_score",
-                    "mixed_interaction_score",
-                    "normal_backbone_score",
-                    "controlled_extreme_score",
-                    "recency_consistency_score",
-                )
-            }
-        else:
-            item = score_candidate(candidate, profile, weights)
-            ranking_score = float(item["prediction_score"])
+        item = _score_structure_record(record, profile, mixed_profile, weights)
+        ranking_score = float(item["prediction_score"])
         entry = (ranking_score, evaluated, item)
-        heap = heaps[candidate_type]
-        pool_size = quota * MIXED_POOL_MULTIPLIER if candidate_type == "mixed" else quota
+        pool_size = max(k, k * MIXED_POOL_MULTIPLIER)
         if len(heap) < pool_size:
             heapq.heappush(heap, entry)
         elif ranking_score > heap[0][0]:
             heapq.heapreplace(heap, entry)
 
-    selected = []
-    for candidate_type in ("normal", "mixed", "outlier"):
-        pool = [entry[2] for entry in sorted(heaps[candidate_type], key=lambda value: value[0], reverse=True)]
-        selected.extend(_select_diverse_mixed(
-            pool, allocation[candidate_type], family_allocation,
-            subtype_diagnostics, family_diagnostics,
-        ) if candidate_type == "mixed" else pool)
-    selected.sort(key=lambda item: (
-        0 if item["pattern_type"] == "mixed" else 1,
-        -float(item.get("mixed_slot_score", item["prediction_score"])),
-    ))
+    remaining = [entry[2] for entry in sorted(heap, key=lambda value: value[0], reverse=True)]
+    selected, type_counts, family_counts = [], Counter(), Counter()
+    while remaining and len(selected) < k:
+        choices = []
+        for index, item in enumerate(remaining):
+            family = item["selected_family"]
+            type_gap = allocation.get(item["pattern_type"], 0) - type_counts[item["pattern_type"]]
+            family_gap = (family_allocation or {}).get(family, 0) - family_counts[family]
+            overlap = sum(len(set(item["numbers"]) & set(prior["numbers"])) for prior in selected)
+            signature_duplicates = sum(item["subtype_signature"] == prior["subtype_signature"] for prior in selected)
+            section_duplicates = sum(item["structure_record"]["section_distribution"] == prior["structure_record"]["section_distribution"] for prior in selected)
+            adjustment = max(-4.0, min(4.0, 1.5 * type_gap)) + max(-2.0, min(2.0, family_gap))
+            adjustment -= min(6.0, 0.8 * overlap + signature_duplicates + 0.5 * section_duplicates)
+            choices.append((float(item["prediction_score"]) + adjustment, -index, index))
+        portfolio_score, _, best_index = max(choices)
+        item = remaining.pop(best_index)
+        item["portfolio_selection_score"] = round(portfolio_score, 4)
+        selected.append(item)
+        type_counts[item["pattern_type"]] += 1
+        family_counts[item["selected_family"]] += 1
+    selected.sort(key=lambda item: float(item["prediction_score"]), reverse=True)
     for rank, item in enumerate(selected, 1):
         item["strategy"] = (
-            "MIXED EMPIRICAL LIFT" if item["pattern_type"] == "mixed"
-            else f"{item['pattern_type'].upper()} PORTFOLIO SLOT"
+            "FINAL ENSEMBLE PORTFOLIO"
         )
         item["rank"] = rank
     return selected, evaluated, allocation
@@ -246,7 +276,10 @@ def generate_recommendations(
     records = build_draw_structure_records(df)
     subtype_records = build_historical_subtype_records(df)
     subtype_baseline = build_exact_mixed_subtype_baseline()
-    family_allocation = suggest_mixed_signature_allocation(subtype_records, baseline=subtype_baseline)
+    type_allocation = _portfolio_allocation(profile, top_k)
+    family_allocation = suggest_mixed_signature_allocation(
+        subtype_records, slots=type_allocation.get("mixed", 0), baseline=subtype_baseline
+    )
     subtype_diagnostics = subtype_information_diagnostics(subtype_records, subtype_baseline)
     family_diagnostics = signature_family_diagnostics(subtype_records, subtype_baseline)
     mixed_profile = build_mixed_profile(records, build_all_combination_baseline())
@@ -283,17 +316,19 @@ def generate_recommendations(
             "seed_offset": seed_offset,
             "candidate_count": candidate_count,
             "evaluated_count": evaluated_count,
+            "historical_draw_count": len(df),
             "recommendation_mode": mode,
             "weight_mode": "component backtest calibrated fixed blend",
             "mixed_model_version": "v2.3.1",
             "analysis_version": "v2.5",
             "portfolio_allocation": allocation,
+            "portfolio_selected": dict(Counter(item["pattern_type"] for item in recommendations)),
             "mixed_diagnostics": _mixed_diagnostics(
-                [item for item in recommendations if item["pattern_type"] == "mixed"], family_allocation
+                recommendations, family_allocation
             ),
             "mixed_subtype_allocation_suggestion": suggest_mixed_subtype_allocation(subtype_records),
             "score_name": "prediction_score",
-            "score_disclaimer": "prediction_score는 실제 당첨확률이 아니라 내부 예측확률점수입니다.",
+            "score_disclaimer": "prediction_score는 실제 당첨확률이 아닙니다. 최신 회차까지의 데이터 기반으로 계산한 내부 경험적 순위 점수입니다.",
         },
         "weights": weights,
         "weight_payload": weight_payload,
@@ -304,15 +339,16 @@ def generate_recommendations(
 def print_recommendations(payload: dict) -> None:
     meta = payload["meta"]
     print("=" * 72)
-    print("LOTTO STAT ENGINE v2.5 - MIXED SUBTYPE ALLOCATION")
+    print("LOTTO STAT ENGINE FINAL - LATEST-DATA DYNAMIC STRUCTURE")
     print("=" * 72)
     print(f"latest reflected draw: {meta['latest_draw']}")
     print(f"target draw: {meta['target_draw']}")
-    print(f"평가 방식: {meta['recommendation_mode']}")
-    print(f"평가 조합 수: {meta['evaluated_count']}")
-    print(f"가중치 방식: {meta['weight_mode']}")
+    print(f"historical draw count: {meta['historical_draw_count']}")
+    print(f"evaluation mode: {meta['recommendation_mode']}")
+    print(f"evaluated combination count: {meta['evaluated_count']}")
     print()
     print(meta["score_disclaimer"])
+    print(f"type allocation target vs selected: {meta['portfolio_allocation']} vs {meta['portfolio_selected']}")
     diagnostics = meta["mixed_diagnostics"]
     print("MIXED PORTFOLIO DIAGNOSTICS")
     print(f"unique extreme_signature count: {diagnostics['unique_extreme_signature_count']}")
@@ -334,7 +370,14 @@ def print_recommendations(payload: dict) -> None:
         print(f"[{idx}] {item['strategy']}")
         print(nums)
         print(f"prediction_score: {item['prediction_score']}")
+        print(f"base_score: {item['base_score']}")
+        print(f"transition_lift_score: {item['transition_lift_score']}")
+        print(f"momentum_lift_score: {item['momentum_lift_score']}")
         print(f"pattern_type: {item['pattern_type']}")
+        print(f"primary_subtype: {item['primary_subtype']}")
+        print(f"subtype_tags: {', '.join(item['subtype_tags']) or 'none'}")
+        print(f"subtype_signature: {item['subtype_signature']}")
+        print(f"selected_family: {item['selected_family']}")
         if item["pattern_type"] == "mixed":
             print(f"mixed_slot_score: {item['mixed_slot_score']:.4f}")
             print(f"extreme_count: {item['extreme_count']}")
@@ -342,27 +385,14 @@ def print_recommendations(payload: dict) -> None:
             print(f"subtype_tags: {', '.join(item['subtype_tags']) or 'none'}")
             print(f"subtype_signature: {item['subtype_signature']}")
             print(f"selected_family: {item['selected_family']}")
-            print(f"mixed_subtype_fit_score: {item['mixed_subtype_fit_score']:.4f}")
         print("score breakdown:")
         for key, value in item["score_breakdown"].items():
             print(f"  {key}: {value:.4f}")
-        if item["pattern_type"] == "mixed":
-            for key in ("family_match_score", "subtype_information_score", "signature_support_score", "family_allocation_fit_score"):
-                print(f"  {key}: {item[key]:.4f}")
-        if item["pattern_type"] == "mixed":
-            print(
-                f"sum={f['sum']}, odd={f['odd_count']}, even={6 - f['odd_count']}, "
-                f"range={f['number_range']}, max_gap={f['max_gap']}, "
-                f"min_gap={f['min_gap']}, sections={f['section_distribution']}"
-            )
-        else:
-            print(
-                f"sum={f['sum']}, odd={f['odd_count']}, even={f['even_count']}, "
-                f"gap_std={round(float(f['gap_std']), 4)}, "
-                f"entropy={round(float(f['ending_digit_entropy']), 4)}, "
-                f"section_entropy={round(float(f['section_entropy']), 4)}, "
-                f"gap_entropy={round(float(f['gap_entropy']), 4)}"
-            )
+        print(
+            f"sum={f['sum']}, odd={f['odd_count']}, even={6 - f['odd_count']}, "
+            f"range={f['number_range']}, max_gap={f['max_gap']}, "
+            f"min_gap={f['min_gap']}, sections={f['section_distribution']}"
+        )
 
     weight_payload = payload.get("weight_payload") or {}
     if "percentile_scores" in weight_payload:

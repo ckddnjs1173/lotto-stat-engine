@@ -374,56 +374,122 @@ def mixed_subtype_fit_components(
         "family_allocation_fit_score": round(allocation_fit, 4),
         "mixed_subtype_fit_score": round(mixed_fit, 4),
     }
-def build_family_transition_matrix(records: list[dict], alpha: float = 0.1) -> dict:
-    mixed = [r for r in records if r["pattern_type"] == "mixed"]
-    mixed.sort(key=lambda x: x["draw_no"])
-    
-    transitions = Counter()
-    source_counts = Counter()
-    families = set()
-    
-    for i in range(len(mixed) - 1):
-        source = signature_family(mixed[i]["subtype_signature"])
-        target = signature_family(mixed[i+1]["subtype_signature"])
-        
-        transitions[f"{source}|{target}"] += 1
-        source_counts[source] += 1
-        families.add(source)
-        families.add(target)
-        
-    transition_probs = {}
-    family_list = list(families)
-    vocab_size = len(family_list)
-    
-    for source in family_list:
-        transition_probs[source] = {}
-        denominator = source_counts[source] + alpha * vocab_size
-        
-        for target in family_list:
-            count = transitions.get(f"{source}|{target}", 0)
-            prob = (count + alpha) / denominator
-            transition_probs[source][target] = prob
-            
-    return transition_probs
+def _coarse_family(record: dict) -> str:
+    return str(record.get("primary_subtype") or record.get("pattern_type") or "none")
 
-def calculate_decay_momentum(records: list[dict], decay_rate: float = 0.05) -> dict:
-    mixed = [r for r in records if r["pattern_type"] == "mixed"]
-    if not mixed:
-        return {}
-        
-    mixed.sort(key=lambda x: x["draw_no"])
-    latest_draw = mixed[-1]["draw_no"]
-    momentum = Counter()
-    
-    for record in mixed:
-        family = signature_family(record["subtype_signature"])
-        draw_diff = latest_draw - record["draw_no"]
-        momentum[family] += math.exp(-decay_rate * draw_diff)
-        
-    max_momentum = max(momentum.values()) if momentum else 1.0
-    normalized_momentum = {
-        family: score / max_momentum 
-        for family, score in momentum.items()
+
+def lift_to_score(lift: float, clip: float = 2.0) -> float:
+    """Map a probability lift to a bounded score with lift=1 exactly neutral."""
+    log_lift = max(-clip, min(clip, math.log(max(float(lift), 1e-12))))
+    return 100.0 / (1.0 + math.exp(-1.5 * log_lift))
+
+
+def _smoothed_distribution(counts: Counter, vocabulary: list[str], alpha: float) -> dict[str, float]:
+    denominator = sum(counts.values()) + alpha * len(vocabulary)
+    if denominator <= 0:
+        return {key: 1.0 / max(1, len(vocabulary)) for key in vocabulary}
+    return {key: (counts[key] + alpha) / denominator for key in vocabulary}
+
+
+def build_family_transition_matrix(records: list[dict], alpha: float = 0.1) -> dict:
+    """Exact-family transitions from real chronological adjacent draws only."""
+    ordered = sorted(records, key=lambda item: item["draw_no"])
+    families = sorted({signature_family(item["subtype_signature"]) for item in ordered})
+    rows: dict[str, Counter] = {family: Counter() for family in families}
+    for source_record, target_record in zip(ordered, ordered[1:]):
+        source = signature_family(source_record["subtype_signature"])
+        target = signature_family(target_record["subtype_signature"])
+        rows[source][target] += 1
+    return {
+        source: _smoothed_distribution(counts, families, alpha)
+        for source, counts in rows.items()
     }
-    
-    return normalized_momentum
+
+
+def calculate_decay_momentum(
+    records: list[dict], decay_rate: float = 0.05, alpha: float = 0.1,
+    latest_draw: int | None = None,
+) -> dict:
+    """Return smoothed family momentum lifts using the global latest draw."""
+    if not records:
+        return {}
+    global_latest = int(latest_draw if latest_draw is not None else max(r["draw_no"] for r in records))
+    eligible = [record for record in records if record["pattern_type"] == "mixed"]
+    families = sorted({signature_family(record["subtype_signature"]) for record in eligible})
+    if not families:
+        return {}
+    historical = Counter(signature_family(record["subtype_signature"]) for record in eligible)
+    weighted = Counter()
+    total_weight = 0.0
+    for record in eligible:
+        weight = math.exp(-decay_rate * (global_latest - int(record["draw_no"])))
+        weighted[signature_family(record["subtype_signature"])] += weight
+        total_weight += weight
+    historical_total = len(eligible)
+    return {
+        family: ((weighted[family] + alpha) / (total_weight + alpha * len(families)))
+        / ((historical[family] + alpha) / (historical_total + alpha * len(families)))
+        for family in families
+    }
+
+
+def build_dynamic_family_model(records: list[dict], alpha: float = 0.1, decay_rate: float = 0.05) -> dict:
+    """Precompute family priors, adjacent transitions, and momentum once per run."""
+    ordered = sorted(records, key=lambda item: item["draw_no"])
+    exact_vocab = sorted({signature_family(item["subtype_signature"]) for item in ordered})
+    coarse_vocab = sorted({_coarse_family(item) for item in ordered})
+    type_vocab = ("normal", "mixed", "outlier")
+    exact_rows: dict[str, Counter] = {key: Counter() for key in exact_vocab}
+    coarse_rows: dict[str, Counter] = {key: Counter() for key in coarse_vocab}
+    type_family_rows: dict[str, Counter] = {key: Counter() for key in type_vocab}
+    for source, target in zip(ordered, ordered[1:]):
+        target_family = signature_family(target["subtype_signature"])
+        exact_rows[signature_family(source["subtype_signature"])][target_family] += 1
+        coarse_rows[_coarse_family(source)][target_family] += 1
+        type_family_rows[source["pattern_type"]][target_family] += 1
+    priors = _smoothed_distribution(
+        Counter(signature_family(item["subtype_signature"]) for item in ordered), exact_vocab, alpha
+    )
+    latest = ordered[-1]
+    momentum_lifts = calculate_decay_momentum(
+        ordered, decay_rate=decay_rate, alpha=alpha, latest_draw=latest["draw_no"]
+    )
+    return {
+        "alpha": alpha,
+        "families": exact_vocab,
+        "priors": priors,
+        "exact_counts": exact_rows,
+        "coarse_counts": coarse_rows,
+        "type_counts": type_family_rows,
+        "latest_family": signature_family(latest["subtype_signature"]),
+        "latest_coarse_family": _coarse_family(latest),
+        "latest_pattern_type": latest["pattern_type"],
+        "latest_draw": int(latest["draw_no"]),
+        "momentum_lifts": momentum_lifts,
+        "momentum_scores": {family: lift_to_score(lift) for family, lift in momentum_lifts.items()},
+    }
+
+
+def family_dynamic_scores(family: str, model: dict) -> tuple[float, float]:
+    """O(1) hierarchical transition/momentum lookup with safe prior fallback."""
+    prior = float(model.get("priors", {}).get(family, model.get("alpha", 0.1) /
+                  max(1.0, 1.0 + model.get("alpha", 0.1) * len(model.get("families", ())))))
+    alpha = float(model.get("alpha", 0.1))
+    vocabulary_size = max(1, len(model.get("families", ())))
+    row = None
+    for table, source in (
+        (model.get("exact_counts", {}), model.get("latest_family")),
+        (model.get("coarse_counts", {}), model.get("latest_coarse_family")),
+        (model.get("type_counts", {}), model.get("latest_pattern_type")),
+    ):
+        counts = table.get(source, Counter())
+        if sum(counts.values()) > 0:
+            row = counts
+            break
+    transition_probability = (
+        (row.get(family, 0) + alpha) / (sum(row.values()) + alpha * vocabulary_size)
+        if row is not None else prior
+    )
+    transition_score = lift_to_score(transition_probability / max(prior, 1e-12))
+    momentum_score = float(model.get("momentum_scores", {}).get(family, 50.0))
+    return transition_score, momentum_score

@@ -11,10 +11,15 @@ from statistics import median
 import numpy as np
 import pandas as pd
 
-from .config import CACHE_DIR
+from .config import CACHE_DIR, ROUND_COLUMN
 from .features import pattern_type
 from .loader import row_numbers
-from .mixed_subtypes import subtype_record
+from .mixed_subtypes import (
+    build_dynamic_family_model,
+    family_dynamic_scores,
+    signature_family,
+    subtype_record,
+)
 
 MIXED_MODEL_VERSION = "v2.3.1"
 BASELINE_CACHE_VERSION = "v2.3"
@@ -165,6 +170,7 @@ def build_draw_structure_records(df: pd.DataFrame) -> list[dict]:
     previous_type = None
     for _, row in df.iterrows():
         record = structure_record(row_numbers(row), previous_type)
+        record["draw_no"] = int(row[ROUND_COLUMN])
         records.append(record)
         previous_type = record["pattern_type"]
     return records
@@ -272,7 +278,7 @@ def build_mixed_profile(
         record for record in records[-min(100, len(records)):]
         if record["pattern_type"] == "mixed"
     ]
-    return {
+    profile = {
         "all": baseline,
         "full": full,
         "recent_300": _record_distribution(recent_300_records),
@@ -280,6 +286,12 @@ def build_mixed_profile(
         "backbone": _robust_stats(mixed),
         "mixed_total": len(mixed),
     }
+    # Draw-aware callers get one dynamic context for the entire candidate
+    # stream. Legacy/synthetic callers without draw numbers retain v2.3
+    # scoring behavior and the existing public function signatures.
+    if records and all("draw_no" in record for record in records):
+        profile["dynamic_markov_decay"] = build_dynamic_family_model(records)
+    return profile
 
 
 def _log_lift(
@@ -410,12 +422,30 @@ def score_mixed_record(record: dict, profile: dict) -> dict:
         "controlled_extreme_score": controlled_extreme_score(record, profile),
         "recency_consistency_score": recency_consistency_score(record, profile),
     }
-    slot_score = sum(
+    base_score = sum(
         MIXED_SCORE_WEIGHTS[key] * value for key, value in components.items()
     )
+    slot_score = base_score
+    dynamic = profile.get("dynamic_markov_decay")
+    dynamic_components = {}
+    if dynamic:
+        cand_family = signature_family(record.get("subtype_signature", "none"))
+        transition_score, momentum_score = family_dynamic_scores(cand_family, dynamic)
+        slot_score = (
+            0.70 * base_score
+            + 0.15 * transition_score
+            + 0.15 * momentum_score
+        )
+        dynamic_components = {
+            "base_score": round(float(base_score), 4),
+            "candidate_family": cand_family,
+            "transition_lift_score": round(float(transition_score), 4),
+            "momentum_lift_score": round(float(momentum_score), 4),
+        }
     return {
         "numbers": list(record["numbers"]),
         "mixed_slot_score": round(float(slot_score), 4),
+        **dynamic_components,
         **{key: round(float(value), 4) for key, value in components.items()},
         "extreme_count": record["extreme_count"],
         "extreme_signature": list(record["extreme_signature"]),
