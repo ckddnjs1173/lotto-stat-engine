@@ -182,8 +182,6 @@ def _allocate_scores(scores: dict[str, float], slots: int, max_per_item: int = 2
         eligible = [key for key in scores if allocated[key] < max_per_item]
         if not eligible:
             break
-        # Diminishing returns keep an informative family represented without
-        # allowing one structural descriptor to absorb the portfolio.
         chosen = max(eligible, key=lambda key: (scores[key] / (allocated[key] + 1), scores[key], key))
         allocated[chosen] += 1
     return {key: value for key, value in allocated.items() if value}
@@ -284,9 +282,6 @@ def suggest_mixed_signature_allocation(records: list[dict], slots: int = 6, base
         trend = min(2.0, recent_ratio / historical_ratio) if historical_ratio else 0.0
         family_tags = name.split("+")
         informative_tags = sum(tag not in BACKGROUND_SUBTYPES for tag in family_tags)
-        # A lone broad background descriptor is diagnostic context, not a
-        # sufficiently specific portfolio family. Supported combinations of
-        # background descriptors remain eligible.
         if informative_tags == 0 and len(family_tags) < 2:
             continue
         information = historical_ratio * abs(math.log2(max(lift, 1e-12)))
@@ -381,7 +376,6 @@ def _coarse_family(record: dict) -> str:
 
 
 def lift_to_score(lift: float, clip: float = 2.0) -> float:
-    """Map a probability lift to a bounded score with lift=1 exactly neutral."""
     log_lift = max(-clip, min(clip, math.log(max(float(lift), 1e-12))))
     return 100.0 / (1.0 + math.exp(-1.5 * log_lift))
 
@@ -399,7 +393,6 @@ def _shrink_probability(
     parent_probability: float,
     prior_strength: float,
 ) -> float:
-    """Shrink a sparse multinomial row toward its parent distribution."""
     support = float(sum(counts.values()))
     strength = max(0.0, float(prior_strength))
     if support <= 0.0:
@@ -411,7 +404,6 @@ def _shrink_probability(
 
 
 def build_family_transition_matrix(records: list[dict], alpha: float = 0.1) -> dict:
-    """Exact-family transitions from real chronological adjacent draws only."""
     ordered = sorted(records, key=lambda item: item["draw_no"])
     families = sorted({signature_family(item["subtype_signature"]) for item in ordered})
     rows: dict[str, Counter] = {family: Counter() for family in families}
@@ -429,7 +421,7 @@ def calculate_decay_momentum(
     records: list[dict], decay_rate: float = 0.05, alpha: float = 0.1,
     latest_draw: int | None = None,
 ) -> dict:
-    """Return smoothed family momentum lifts using the global latest draw."""
+    """Legacy mixed-only momentum diagnostic retained for regression comparison."""
     if not records:
         return {}
     global_latest = int(latest_draw if latest_draw is not None else max(r["draw_no"] for r in records))
@@ -452,13 +444,49 @@ def calculate_decay_momentum(
     }
 
 
+def _calculate_all_family_decay_momentum(
+    records: list[dict],
+    decay_rate: float = 0.05,
+    alpha: float = 0.1,
+    prior_strength: float = 12.0,
+    latest_draw: int | None = None,
+) -> dict[str, float]:
+    """All-draw family momentum, shrunk toward the long-run family distribution."""
+    if not records:
+        return {}
+    ordered = sorted(records, key=lambda item: item["draw_no"])
+    global_latest = int(latest_draw if latest_draw is not None else ordered[-1]["draw_no"])
+    families = sorted({signature_family(record["subtype_signature"]) for record in ordered})
+    historical = Counter(signature_family(record["subtype_signature"]) for record in ordered)
+    historical_probs = _smoothed_distribution(historical, families, alpha)
+    weighted = Counter()
+    total_weight = 0.0
+    for record in ordered:
+        weight = math.exp(-decay_rate * (global_latest - int(record["draw_no"])))
+        weighted[signature_family(record["subtype_signature"])] += weight
+        total_weight += weight
+    strength = max(0.0, float(prior_strength))
+    denominator = total_weight + strength
+    if denominator <= 0.0:
+        return {family: 1.0 for family in families}
+    lifts = {}
+    for family in families:
+        historical_probability = historical_probs[family]
+        recent_probability = (
+            weighted[family] + strength * historical_probability
+        ) / denominator
+        lifts[family] = recent_probability / max(historical_probability, 1e-12)
+    return lifts
+
+
 def build_dynamic_family_model(
     records: list[dict],
     alpha: float = 0.1,
     decay_rate: float = 0.05,
     transition_prior_strength: float = 12.0,
+    momentum_prior_strength: float = 12.0,
 ) -> dict:
-    """Precompute adjacent transitions and momentum with hierarchical shrinkage."""
+    """Precompute adjacent transitions and all-draw shrinkage momentum."""
     ordered = sorted(records, key=lambda item: item["draw_no"])
     exact_vocab = sorted({signature_family(item["subtype_signature"]) for item in ordered})
     coarse_vocab = sorted({_coarse_family(item) for item in ordered})
@@ -475,12 +503,17 @@ def build_dynamic_family_model(
         Counter(signature_family(item["subtype_signature"]) for item in ordered), exact_vocab, alpha
     )
     latest = ordered[-1]
-    momentum_lifts = calculate_decay_momentum(
-        ordered, decay_rate=decay_rate, alpha=alpha, latest_draw=latest["draw_no"]
+    momentum_lifts = _calculate_all_family_decay_momentum(
+        ordered,
+        decay_rate=decay_rate,
+        alpha=alpha,
+        prior_strength=momentum_prior_strength,
+        latest_draw=latest["draw_no"],
     )
     return {
         "alpha": alpha,
         "transition_prior_strength": float(transition_prior_strength),
+        "momentum_prior_strength": float(momentum_prior_strength),
         "families": exact_vocab,
         "priors": priors,
         "exact_counts": exact_rows,
@@ -496,7 +529,6 @@ def build_dynamic_family_model(
 
 
 def family_dynamic_scores(family: str, model: dict) -> tuple[float, float]:
-    """Hierarchically shrink type -> coarse -> exact transition evidence."""
     prior = float(model.get("priors", {}).get(family, model.get("alpha", 0.1) /
                   max(1.0, 1.0 + model.get("alpha", 0.1) * len(model.get("families", ())))))
     strength = float(model.get("transition_prior_strength", 12.0))
