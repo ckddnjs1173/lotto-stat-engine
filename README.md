@@ -15,7 +15,7 @@ ranking score, not an actual winning probability.
 No draw number is hardcoded. The latest real draw is always the prediction
 state, and adding a valid row requires no source-code changes.
 
-## Final score
+## Production score
 
 ```text
 prediction_score =
@@ -24,18 +24,49 @@ prediction_score =
 + 0.15 * momentum_lift_score
 ```
 
-All three components use a comparable 0-100 scale. The base score preserves
-the established structural evidence: empirical and interaction lift, robust
-backbone, controlled extremes, and subtype/family structure. Transition
-evidence uses only real chronological `t -> t+1` pairs with Bayesian smoothing
-and hierarchical fallback. Momentum uses the global latest draw as its decay
-origin. Both lift components map lift 1 to the neutral score 50 and clip sparse
-extremes.
+The base score preserves the established structural evidence: empirical and
+interaction lift, robust backbone, controlled extremes, and subtype/family
+structure.
+
+Transition evidence uses only real chronological `t -> t+1` pairs. Sparse rows
+are not trusted directly: target-family probabilities are hierarchically shrunk
+from the global family prior through pattern type and coarse family to the exact
+latest family. The current transition prior strength is a conservative research
+value, not a fitted winning-probability parameter.
+
+Production momentum is anchored at the global latest draw and uses all draw
+types. Exponentially decayed recent family mass is shrunk toward the long-run
+family distribution before converting recent/long-run lift to the 0-100 score.
+A lift of 1 maps to the neutral score 50.
 
 Type and mixed-family allocations are recomputed on every run and applied only
-as bounded portfolio preferences. Every valid combination remains eligible;
-there are no hard filters, random recommendation layers, bonus-number scores,
-or aesthetic number rules.
+as bounded portfolio preferences. Candidate retention is partitioned by pattern
+type so one high-scoring type cannot erase all other types before final portfolio
+selection. Every valid combination remains eligible; there are no structural
+hard filters, bonus-number scores, or aesthetic number rules.
+
+## Evidence policy
+
+New statistical ideas are researched independently before they are allowed into
+the production score. A component is not promoted because it sounds plausible or
+because it matches the latest draw. Evaluation uses strict rolling-origin
+walk-forward tests: target draw `t` may use only draws `< t`.
+
+### Rejected: standalone number hot/cold frequency
+
+`number_bayes_evidence_v1` tested full-history and exponentially decayed Bayesian
+marginal number frequencies against the fair `6/45` null across 1,135 strict
+walk-forward targets. All predeclared variants produced negative Brier skill and
+worse log loss overall, in the most recent 300 targets, and in the most recent
+100 targets. Therefore standalone hot/cold or recent-number frequency is not a
+production feature.
+
+### Research: pair frequency / interaction
+
+`pair_bayes_evidence_v1` tests all 990 unordered number pairs against the fair
+pair-inclusion probability `1/66`. It is research-only. Pair evidence must improve
+out-of-sample proper scores before any pair-derived component can be considered
+for production scoring.
 
 ## Commands
 
@@ -44,6 +75,8 @@ python -m unittest discover -s tests -v
 python scripts\validate_data.py
 python scripts\analyze_mixed_subtypes.py
 python scripts\run_mixed_backtest.py
+python scripts\run_number_evidence_backtest.py
+python scripts\run_pair_evidence_backtest.py
 python scripts\run_recommend.py
 ```
 
