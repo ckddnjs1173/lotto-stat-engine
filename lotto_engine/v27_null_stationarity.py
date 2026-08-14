@@ -189,6 +189,20 @@ def _pattern_proportions(records: list[dict]) -> dict[str, float]:
     }
 
 
+def _mean_z_vs_fair(history_values, fair_values) -> tuple[float, float]:
+    """Compare means while accounting for Monte Carlo error in the fair-null mean."""
+    history = np.asarray(history_values, dtype=float)
+    fair = np.asarray(fair_values, dtype=float)
+    if history.size == 0 or fair.size < 2:
+        return float("nan"), float("nan")
+    fair_sd = float(np.std(fair, ddof=1))
+    if fair_sd <= 0.0:
+        return 0.0, 0.0
+    standard_error = fair_sd * np.sqrt((1.0 / history.size) + (1.0 / fair.size))
+    mean_z = (float(history.mean()) - float(fair.mean())) / standard_error
+    return float(mean_z), float(standard_error)
+
+
 def run_v27_null_stationarity_screen(
     df: pd.DataFrame,
     fair_samples: int = SCREENING_FAIR_SAMPLES,
@@ -216,16 +230,12 @@ def run_v27_null_stationarity_screen(
             [float(record[feature]) for record in fair], dtype=float
         )
         fair_sd = float(np.std(fair_values, ddof=1))
-        standard_error = fair_sd / np.sqrt(len(history_values)) if fair_sd > 0 else 0.0
-        mean_z = (
-            (float(history_values.mean()) - float(fair_values.mean())) / standard_error
-            if standard_error > 0.0
-            else 0.0
-        )
+        mean_z, standard_error = _mean_z_vs_fair(history_values, fair_values)
         marginal[feature] = {
             "historical_mean": float(history_values.mean()),
             "fair_mean": float(fair_values.mean()),
             "fair_sd": fair_sd,
+            "mean_difference_standard_error": standard_error,
             "historical_mean_z_vs_fair": float(mean_z),
         }
         series_results[feature] = permutation_series_screen(
@@ -307,6 +317,7 @@ def run_v27_null_stationarity_screen(
         "notes": {
             "multiple_testing": "Holm adjustment is applied separately to ACF, recent-shift, and CUSUM feature families.",
             "fair_draw_null": "Each fair sample is an independent exact 6-of-45 draw generated without replacement within the draw.",
+            "mean_z_standard_error": "The fair-null mean comparison includes both historical sampling error and Monte Carlo error from the finite fair sample.",
             "promotion_rule": "Screening significance creates a confirmation candidate only; it is not production evidence.",
         },
     }
