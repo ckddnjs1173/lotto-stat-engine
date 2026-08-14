@@ -8,6 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from lotto_engine.config import BACKTEST_START_INDEX
 from lotto_engine.loader import load_lotto_data
 from lotto_engine.v27_audit_artifact import (
     current_git_commit,
@@ -28,6 +29,12 @@ def _fmt(value: float) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Strict walk-forward v2.7 raw dynamic evidence audit"
+    )
+    parser.add_argument(
+        "--start-index",
+        type=int,
+        default=BACKTEST_START_INDEX,
+        help="first zero-based target index; use a late index only for cheap smoke runs",
     )
     parser.add_argument(
         "--baseline-samples",
@@ -58,6 +65,7 @@ def main() -> None:
     df = load_lotto_data()
     payload = run_v27_dynamic_evidence_audit(
         df,
+        start_index=args.start_index,
         baseline_samples=args.baseline_samples,
         bootstrap_reps=args.bootstrap_reps,
         progress_every=args.progress_every,
@@ -77,6 +85,7 @@ def main() -> None:
         f"data: rows={fingerprint['row_count']} latest={fingerprint['latest_draw']} "
         f"sha256={fingerprint['sha256'][:12]}..."
     )
+    print(f"start index: {payload['start_index']}")
     print(f"tests: {payload['total_tests']}")
     print(f"fair baseline samples / target: {payload['baseline_samples_per_target']}")
     print(f"block bootstrap reps: {payload['bootstrap_reps']}")
