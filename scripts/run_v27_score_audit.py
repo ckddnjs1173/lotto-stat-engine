@@ -9,7 +9,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lotto_engine.loader import load_lotto_data
+from lotto_engine.v27_audit_artifact import (
+    current_git_commit,
+    dataframe_fingerprint,
+    write_json_artifact,
+)
 from lotto_engine.v27_validation import (
+    DEFAULT_BOOTSTRAP_BLOCK,
     DEFAULT_BOOTSTRAP_REPS,
     SCREENING_BASELINE_SAMPLES,
     run_v27_score_audit,
@@ -42,6 +48,12 @@ def main() -> None:
         default=50,
         help="print progress every N targets; 0 disables progress output",
     )
+    parser.add_argument(
+        "--output-json",
+        type=Path,
+        default=None,
+        help="optional path for a strict-JSON reproducibility artifact",
+    )
     args = parser.parse_args()
 
     df = load_lotto_data()
@@ -51,14 +63,27 @@ def main() -> None:
         bootstrap_reps=args.bootstrap_reps,
         progress_every=args.progress_every,
     )
+    payload["run_metadata"] = {
+        "runner_commit": current_git_commit(PROJECT_ROOT),
+        "bootstrap_block_size": DEFAULT_BOOTSTRAP_BLOCK,
+        "data_fingerprint": dataframe_fingerprint(df),
+    }
 
     print("=" * 88)
     print("V2.7 SCORE AUDIT - STRICT WALK FORWARD")
     print("=" * 88)
     print(f"benchmark commit: {payload['benchmark_commit'][:8]}")
+    print(f"runner commit: {payload['run_metadata']['runner_commit'] or 'unknown'}")
+    print(
+        "data: "
+        f"rows={payload['run_metadata']['data_fingerprint']['row_count']} "
+        f"latest={payload['run_metadata']['data_fingerprint']['latest_draw']} "
+        f"sha256={payload['run_metadata']['data_fingerprint']['sha256'][:12]}..."
+    )
     print(f"tests: {payload['total_tests']}")
     print(f"random baseline samples / target: {payload['baseline_samples_per_target']}")
     print(f"block bootstrap reps: {payload['bootstrap_reps']}")
+    print(f"block bootstrap size: {payload['run_metadata']['bootstrap_block_size']}")
     print()
 
     for name, result in payload["models"].items():
@@ -103,6 +128,10 @@ def main() -> None:
     print("  - positive point estimates alone are NOT promotion evidence")
     print("  - promotion candidate requires paired CI > 0 and recent-window stability")
     print("  - screening winners must be rerun with --baseline-samples 2000")
+
+    if args.output_json is not None:
+        saved = write_json_artifact(payload, args.output_json)
+        print(f"audit JSON saved: {saved}")
 
 
 if __name__ == "__main__":
