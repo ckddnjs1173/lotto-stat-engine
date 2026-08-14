@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import random
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -160,11 +159,12 @@ def score_v27_audit_candidate(
 
 
 def _window_mean(values: list[float], window: int | None = None) -> float:
-    finite = [float(value) for value in values if np.isfinite(value)]
+    selected = list(values)
+    if window is not None:
+        selected = selected[-min(int(window), len(selected)):]
+    finite = [float(value) for value in selected if np.isfinite(value)]
     if not finite:
         return float("nan")
-    if window is not None:
-        finite = finite[-min(int(window), len(finite)):]
     return float(np.mean(finite))
 
 
@@ -190,7 +190,9 @@ def _block_bootstrap_mean_ci(
     blocks_needed = (n + block - 1) // block
     for rep in range(int(reps)):
         starts = rng.integers(0, n, size=blocks_needed)
-        indices = np.concatenate(((start + offsets) % n for start in starts))[:n]
+        indices = np.concatenate([
+            (int(start) + offsets) % n for start in starts
+        ])[:n]
         means[rep] = float(data[indices].mean())
     low, high = np.quantile(means, (0.025, 0.975))
     return float(low), float(high)
