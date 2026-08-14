@@ -50,7 +50,9 @@ engine:
 
 Generate independent exact 6-of-45 draws. Selection is without replacement inside
 each draw. Compare the historical feature mean with the fair-draw reference and
-report a standardized mean displacement.
+report a standardized mean displacement. The standard error includes both the
+historical-sample term and the finite Monte Carlo fair-reference term, so small
+smoke samples cannot appear artificially over-precise.
 
 This marginal comparison is descriptive. A marginal anomaly by itself does not
 establish predictability.
