@@ -36,6 +36,7 @@ MIXED_DIVERSITY_STRENGTH = 8.0
 MIXED_SUBTYPE_FIT_STRENGTH = 6.0
 MIXED_FAMILY_OVERFILL_PENALTY = 3.0
 MIXED_DUPLICATE_SIGNATURE_PENALTY = 2.0
+PATTERN_TYPES = ("normal", "mixed", "outlier")
 
 
 def _mixed_similarity(left: dict, right: dict) -> float:
@@ -161,11 +162,42 @@ def _portfolio_allocation(profile: dict, top_k: int) -> dict[str, int]:
     probabilities = profile["transition_probs"].get(
         profile["latest_pattern_type"], profile["pattern_type_probs"]
     )
-    raw = {key: top_k * probabilities.get(key, 0.0) for key in ("normal", "mixed", "outlier")}
+    raw = {key: top_k * probabilities.get(key, 0.0) for key in PATTERN_TYPES}
     allocation = {key: int(value) for key, value in raw.items()}
     for key in sorted(raw, key=lambda item: raw[item] - allocation[item], reverse=True)[:top_k - sum(allocation.values())]:
         allocation[key] += 1
     return allocation
+
+
+def _type_pool_sizes(allocation: dict[str, int], k: int) -> dict[str, int]:
+    """Reserve independent score pools so one pattern type cannot erase the others.
+
+    Allocation remains a soft portfolio preference: even a type with a zero
+    target keeps a small reserve and can still win slots on prediction score.
+    """
+    return {
+        candidate_type: max(k, max(1, allocation.get(candidate_type, 0)) * MIXED_POOL_MULTIPLIER)
+        for candidate_type in PATTERN_TYPES
+    }
+
+
+def _push_type_candidate(
+    heaps: dict[str, list[tuple[float, int, dict]]],
+    pool_sizes: dict[str, int],
+    candidate_type: str,
+    entry: tuple[float, int, dict],
+) -> None:
+    heap = heaps.setdefault(candidate_type, [])
+    pool_size = pool_sizes.get(candidate_type, max(1, len(heap)))
+    if len(heap) < pool_size:
+        heapq.heappush(heap, entry)
+    elif entry[0] > heap[0][0]:
+        heapq.heapreplace(heap, entry)
+
+
+def _flatten_type_heaps(heaps: dict[str, list[tuple[float, int, dict]]]) -> list[dict]:
+    entries = [entry for heap in heaps.values() for entry in heap]
+    return [entry[2] for entry in sorted(entries, key=lambda value: value[0], reverse=True)]
 
 
 def _score_structure_record(record: dict, profile: dict, mixed_profile: dict, weights: dict) -> dict:
@@ -215,20 +247,21 @@ def _top_portfolio_stream(
     family_diagnostics: dict[str, dict] | None = None,
 ) -> tuple[list[dict], int, dict[str, int]]:
     allocation = _portfolio_allocation(profile, k)
-    heap: list[tuple[float, int, dict]] = []
+    pool_sizes = _type_pool_sizes(allocation, k)
+    heaps: dict[str, list[tuple[float, int, dict]]] = {
+        candidate_type: [] for candidate_type in PATTERN_TYPES
+    }
     evaluated = 0
     for evaluated, candidate in enumerate(candidates, 1):
         record = structure_record(candidate, profile["latest_pattern_type"])
         item = _score_structure_record(record, profile, mixed_profile, weights)
         ranking_score = float(item["prediction_score"])
         entry = (ranking_score, evaluated, item)
-        pool_size = max(k, k * MIXED_POOL_MULTIPLIER)
-        if len(heap) < pool_size:
-            heapq.heappush(heap, entry)
-        elif ranking_score > heap[0][0]:
-            heapq.heapreplace(heap, entry)
+        _push_type_candidate(
+            heaps, pool_sizes, item["pattern_type"], entry
+        )
 
-    remaining = [entry[2] for entry in sorted(heap, key=lambda value: value[0], reverse=True)]
+    remaining = _flatten_type_heaps(heaps)
     selected, type_counts, family_counts = [], Counter(), Counter()
     while remaining and len(selected) < k:
         choices = []
@@ -250,9 +283,7 @@ def _top_portfolio_stream(
         family_counts[item["selected_family"]] += 1
     selected.sort(key=lambda item: float(item["prediction_score"]), reverse=True)
     for rank, item in enumerate(selected, 1):
-        item["strategy"] = (
-            "FINAL ENSEMBLE PORTFOLIO"
-        )
+        item["strategy"] = "FINAL ENSEMBLE PORTFOLIO"
         item["rank"] = rank
     return selected, evaluated, allocation
 
