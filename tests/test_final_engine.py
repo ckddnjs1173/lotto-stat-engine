@@ -87,6 +87,21 @@ class FinalDynamicModelTests(unittest.TestCase):
         changed = calculate_decay_momentum(records + [record(6, "mixed", "a")])
         self.assertNotEqual(actual, changed)
 
+    def test_production_momentum_uses_all_draw_types_and_recency(self):
+        records = [
+            record(1, "normal", "old_normal"),
+            record(2, "mixed", "mixed_history"),
+            record(98, "normal", "recent_normal"),
+            record(99, "normal", "recent_normal"),
+            record(100, "outlier", "recent_outlier"),
+        ]
+        model = build_dynamic_family_model(records, decay_rate=0.05)
+        _, recent_score = family_dynamic_scores("recent_normal", model)
+        _, old_score = family_dynamic_scores("old_normal", model)
+        self.assertGreater(recent_score, 50.0)
+        self.assertLess(old_score, 50.0)
+        self.assertNotEqual(recent_score, old_score)
+
     def test_neutral_lifts_and_missing_family_are_safe(self):
         self.assertAlmostEqual(lift_to_score(1.0), 50.0)
         model = build_dynamic_family_model([
@@ -102,9 +117,6 @@ class FinalDynamicModelTests(unittest.TestCase):
         heaps = {candidate_type: [] for candidate_type in PATTERN_TYPES}
         serial = 0
 
-        # More than the former global TOP-2500 pool is filled with higher-scored
-        # outliers. Under the old implementation all lower-scored normal/mixed
-        # candidates would disappear before portfolio selection.
         for index in range(3000):
             serial += 1
             item = {"pattern_type": "outlier", "numbers": [index]}
