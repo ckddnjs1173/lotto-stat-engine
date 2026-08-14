@@ -6,9 +6,9 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .backtest import run_walk_forward_backtest
 from .candidates import generate_candidates, iter_all_combinations, make_seed
 from .config import (
+    BASE_WEIGHTS,
     DEFAULT_CANDIDATE_COUNT,
     DEFAULT_EXHAUSTIVE_RECOMMENDATION,
     TOP_K_RECOMMENDATIONS,
@@ -23,12 +23,10 @@ from .mixed_scoring import (
 )
 from .profiles import build_profile
 from .scoring import SCORE_WEIGHTS, score_candidate
-from .weights import load_weight_payload
 
 MODEL_VERSION = "v2.7"
 RELEASE_STATUS = "release_candidate"
 SELECTION_STRATEGY = "pure_static_score_top_k"
-DISABLED_DYNAMIC_COMPONENTS = ("transition", "momentum")
 SCORE_DISCLAIMER = (
     "score는 실제 당첨확률이 아닙니다. 최신 반영 회차까지의 데이터로 계산한 "
     "정적 통계 순위 점수이며, 모든 유효 6/45 조합은 후보가 될 수 있습니다."
@@ -132,13 +130,6 @@ def top_static_stream(
     return selected, evaluated
 
 
-def _resolve_feature_weights(df) -> tuple[dict[str, float], dict]:
-    payload = load_weight_payload()
-    if payload is None or "final_weights" not in payload:
-        payload = run_walk_forward_backtest(df)
-    return dict(payload["final_weights"]), payload
-
-
 def generate_release_recommendations(
     seed_offset: int = 0,
     candidate_count: int = DEFAULT_CANDIDATE_COUNT,
@@ -152,7 +143,7 @@ def generate_release_recommendations(
     mixed_profile = without_dynamic_context(
         build_mixed_profile(records, build_all_combination_baseline())
     )
-    feature_weights, weight_payload = _resolve_feature_weights(df)
+    feature_weights = dict(BASE_WEIGHTS)
 
     latest_draw = int(profile["latest_round"])
     target_draw = latest_draw + 1
@@ -194,11 +185,11 @@ def generate_release_recommendations(
                 "momentum": "disabled_after_v2.7_validation",
             },
             "cross_type_calibration": "disabled_after_phase2_rejection",
+            "feature_weight_source": "config.BASE_WEIGHTS",
             "score_name": "prediction_score",
             "score_disclaimer": SCORE_DISCLAIMER,
         },
         "feature_weights": feature_weights,
-        "weight_payload": weight_payload,
         "recommendations": recommendations,
     }
 
