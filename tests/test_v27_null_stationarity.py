@@ -1,6 +1,9 @@
 import unittest
 
+import numpy as np
+
 from lotto_engine.v27_null_stationarity import (
+    _mean_z_vs_fair,
     holm_adjust,
     lag_acf,
     pattern_transition_mutual_information,
@@ -36,6 +39,15 @@ class V27NullStationarityTests(unittest.TestCase):
         constant = ["normal"] * 100
         self.assertGreater(pattern_transition_mutual_information(alternating), 0.5)
         self.assertAlmostEqual(pattern_transition_mutual_information(constant), 0.0)
+
+    def test_mean_z_includes_fair_monte_carlo_error(self):
+        history = np.asarray([2.0, 2.0, 2.0, 2.0])
+        fair = np.asarray([0.0, 2.0])
+        z_score, standard_error = _mean_z_vs_fair(history, fair)
+        fair_sd = float(np.std(fair, ddof=1))
+        expected_se = fair_sd * np.sqrt((1.0 / len(history)) + (1.0 / len(fair)))
+        self.assertAlmostEqual(standard_error, expected_se)
+        self.assertAlmostEqual(z_score, (history.mean() - fair.mean()) / expected_se)
 
 
 if __name__ == "__main__":
