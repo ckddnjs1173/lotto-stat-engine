@@ -1,5 +1,6 @@
 import math
 import unittest
+from collections import Counter
 
 from lotto_engine.candidates import iter_all_combinations
 from lotto_engine.mixed_subtypes import (
@@ -8,6 +9,12 @@ from lotto_engine.mixed_subtypes import (
     calculate_decay_momentum,
     family_dynamic_scores,
     lift_to_score,
+)
+from lotto_engine.recommender import (
+    PATTERN_TYPES,
+    _flatten_type_heaps,
+    _push_type_candidate,
+    _type_pool_sizes,
 )
 
 
@@ -63,6 +70,40 @@ class FinalDynamicModelTests(unittest.TestCase):
         transition, momentum = family_dynamic_scores("missing", model)
         self.assertTrue(0.0 <= transition <= 100.0)
         self.assertEqual(momentum, 50.0)
+
+    def test_type_partitioned_pool_prevents_global_score_monopoly(self):
+        allocation = {"normal": 2, "mixed": 6, "outlier": 2}
+        pool_sizes = _type_pool_sizes(allocation, 10)
+        heaps = {candidate_type: [] for candidate_type in PATTERN_TYPES}
+        serial = 0
+
+        # More than the former global TOP-2500 pool is filled with higher-scored
+        # outliers. Under the old implementation all lower-scored normal/mixed
+        # candidates would disappear before portfolio selection.
+        for index in range(3000):
+            serial += 1
+            item = {"pattern_type": "outlier", "numbers": [index]}
+            _push_type_candidate(
+                heaps, pool_sizes, "outlier", (1000.0 - index * 0.001, serial, item)
+            )
+        for candidate_type, base_score in (("normal", 20.0), ("mixed", 30.0)):
+            for index in range(20):
+                serial += 1
+                item = {"pattern_type": candidate_type, "numbers": [index]}
+                _push_type_candidate(
+                    heaps, pool_sizes, candidate_type, (base_score - index * 0.01, serial, item)
+                )
+
+        retained = _flatten_type_heaps(heaps)
+        retained_counts = Counter(item["pattern_type"] for item in retained)
+        self.assertEqual(retained_counts["normal"], 20)
+        self.assertEqual(retained_counts["mixed"], 20)
+        self.assertEqual(retained_counts["outlier"], pool_sizes["outlier"])
+
+    def test_zero_target_type_still_keeps_soft_reserve(self):
+        pool_sizes = _type_pool_sizes({"normal": 0, "mixed": 10, "outlier": 0}, 10)
+        self.assertGreater(pool_sizes["normal"], 0)
+        self.assertGreater(pool_sizes["outlier"], 0)
 
     def test_exhaustive_iterator_count_is_exact(self):
         self.assertEqual(sum(1 for _ in iter_all_combinations()), 8_145_060)
