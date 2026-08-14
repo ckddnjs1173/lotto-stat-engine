@@ -55,29 +55,49 @@ def _history_weights(rounds: np.ndarray, half_life: float | None) -> np.ndarray:
     return np.exp(-decay_rate * (latest_round - rounds.astype(float)))
 
 
+def _posterior_from_state(
+    weighted_hits: np.ndarray,
+    effective_draws: float,
+    prior_strength: float,
+) -> np.ndarray:
+    prior_strength = float(prior_strength)
+    if prior_strength < 0.0:
+        raise ValueError("prior_strength must be non-negative")
+    denominator = float(effective_draws) + prior_strength
+    if denominator <= 0.0:
+        return np.full(PAIR_COUNT, UNIFORM_PAIR_PROBABILITY, dtype=float)
+    return (
+        weighted_hits + prior_strength * UNIFORM_PAIR_PROBABILITY
+    ) / denominator
+
+
 def _posterior_from_history(
     history_matrix: np.ndarray,
     history_rounds: np.ndarray,
     prior_strength: float,
     half_life: float | None,
 ) -> np.ndarray:
-    prior_strength = float(prior_strength)
-    if prior_strength < 0.0:
-        raise ValueError("prior_strength must be non-negative")
     if len(history_matrix) == 0:
         return np.full(PAIR_COUNT, UNIFORM_PAIR_PROBABILITY, dtype=float)
-
     weights = _history_weights(history_rounds, half_life)
-    effective_draws = float(weights.sum())
-    weighted_hits = weights @ history_matrix
-    denominator = effective_draws + prior_strength
-    if denominator <= 0.0:
-        return np.full(PAIR_COUNT, UNIFORM_PAIR_PROBABILITY, dtype=float)
+    return _posterior_from_state(
+        weights @ history_matrix,
+        float(weights.sum()),
+        prior_strength,
+    ).astype(float)
 
-    probabilities = (
-        weighted_hits + prior_strength * UNIFORM_PAIR_PROBABILITY
-    ) / denominator
-    return probabilities.astype(float)
+
+def _advance_state(state: dict, actual: np.ndarray, round_no: float) -> None:
+    half_life = state["half_life"]
+    latest_round = state["latest_round"]
+    if half_life is not None and latest_round is not None:
+        decay_rate = math.log(2.0) / float(half_life)
+        factor = math.exp(-decay_rate * (float(round_no) - float(latest_round)))
+        state["weighted_hits"] *= factor
+        state["effective_draws"] *= factor
+    state["weighted_hits"] += actual
+    state["effective_draws"] += 1.0
+    state["latest_round"] = float(round_no)
 
 
 def pair_posterior_probabilities(
@@ -166,7 +186,8 @@ def run_pair_evidence_backtest(
 
     For target row idx, every pair probability is estimated from df.iloc[:idx]
     only. The fair 1/66 pair probability is the null. Positive Brier skill means
-    lower out-of-sample loss than the fair-null forecast.
+    lower out-of-sample loss than the fair-null forecast. Exponentially decayed
+    histories are updated recursively so each past draw is processed once.
     """
     if len(df) <= start_index:
         raise ValueError(f"pair evidence backtest requires at least {start_index + 1} draws")
@@ -174,6 +195,12 @@ def run_pair_evidence_backtest(
     names = [str(spec["name"]) for spec in specs]
     if len(set(names)) != len(names):
         raise ValueError("pair evidence spec names must be unique")
+    for spec in specs:
+        if float(spec["prior_strength"]) < 0.0:
+            raise ValueError("prior_strength must be non-negative")
+        half_life = spec.get("half_life")
+        if half_life is not None and float(half_life) <= 0.0:
+            raise ValueError("half_life must be positive or None")
 
     matrix = _pair_indicator_matrix(df)
     rounds = df[ROUND_COLUMN].to_numpy(dtype=float)
@@ -188,50 +215,67 @@ def run_pair_evidence_backtest(
         }
         for name in names
     }
+    states = {
+        str(spec["name"]): {
+            "weighted_hits": np.zeros(PAIR_COUNT, dtype=float),
+            "effective_draws": 0.0,
+            "latest_round": None,
+            "half_life": spec.get("half_life"),
+            "prior_strength": float(spec["prior_strength"]),
+        }
+        for spec in specs
+    }
     detail_rows: list[dict] = []
 
-    for idx in range(int(start_index), len(df)):
+    for idx in range(len(df)):
         actual = matrix[idx]
-        baseline_brier = _brier_score(uniform, actual)
-        baseline_log = _binary_log_loss(uniform, actual)
-        baseline["brier"].append(baseline_brier)
-        baseline["log_loss"].append(baseline_log)
+        round_no = float(rounds[idx])
 
-        history_matrix = matrix[:idx]
-        history_rounds = rounds[:idx]
-        winner_mask = actual.astype(bool)
-        row_detail = {
-            "target_round": int(rounds[idx]),
-            "history_draws": int(idx),
-            "uniform_brier": baseline_brier,
-            "models": {},
-        }
-        for spec in specs:
-            name = str(spec["name"])
-            probabilities = _posterior_from_history(
-                history_matrix,
-                history_rounds,
-                prior_strength=float(spec["prior_strength"]),
-                half_life=spec.get("half_life"),
-            )
-            brier = _brier_score(probabilities, actual)
-            log_loss = _binary_log_loss(probabilities, actual)
-            winner_probability = float(np.mean(probabilities[winner_mask]))
-            top15 = np.argpartition(probabilities, -PAIRS_PER_DRAW)[-PAIRS_PER_DRAW:]
-            top15_matches = float(actual[top15].sum())
-            metrics[name]["brier"].append(brier)
-            metrics[name]["log_loss"].append(log_loss)
-            metrics[name]["winner_pair_probability"].append(winner_probability)
-            metrics[name]["top15_pair_matches"].append(top15_matches)
+        # States contain rows strictly before idx at this point.
+        if idx >= int(start_index):
+            baseline_brier = _brier_score(uniform, actual)
+            baseline_log = _binary_log_loss(uniform, actual)
+            baseline["brier"].append(baseline_brier)
+            baseline["log_loss"].append(baseline_log)
+            winner_mask = actual.astype(bool)
+            row_detail = {
+                "target_round": int(round_no),
+                "history_draws": int(idx),
+                "uniform_brier": baseline_brier,
+                "models": {},
+            }
+
+            for spec in specs:
+                name = str(spec["name"])
+                state = states[name]
+                probabilities = _posterior_from_state(
+                    state["weighted_hits"],
+                    state["effective_draws"],
+                    state["prior_strength"],
+                )
+                brier = _brier_score(probabilities, actual)
+                log_loss = _binary_log_loss(probabilities, actual)
+                winner_probability = float(np.mean(probabilities[winner_mask]))
+                top15 = np.argpartition(probabilities, -PAIRS_PER_DRAW)[-PAIRS_PER_DRAW:]
+                top15_matches = float(actual[top15].sum())
+                metrics[name]["brier"].append(brier)
+                metrics[name]["log_loss"].append(log_loss)
+                metrics[name]["winner_pair_probability"].append(winner_probability)
+                metrics[name]["top15_pair_matches"].append(top15_matches)
+                if include_rows:
+                    row_detail["models"][name] = {
+                        "brier": brier,
+                        "log_loss": log_loss,
+                        "winner_pair_probability": winner_probability,
+                        "top15_pair_matches": top15_matches,
+                    }
             if include_rows:
-                row_detail["models"][name] = {
-                    "brier": brier,
-                    "log_loss": log_loss,
-                    "winner_pair_probability": winner_probability,
-                    "top15_pair_matches": top15_matches,
-                }
-        if include_rows:
-            detail_rows.append(row_detail)
+                detail_rows.append(row_detail)
+
+        # Only after scoring target idx does it become available to the next
+        # target, preserving strict rolling-origin / no-future-leakage logic.
+        for state in states.values():
+            _advance_state(state, actual, round_no)
 
     baseline_brier = _metric_summary(baseline["brier"])
     baseline_log = _metric_summary(baseline["log_loss"])
