@@ -49,6 +49,31 @@ class FinalDynamicModelTests(unittest.TestCase):
         self.assertEqual(second["latest_draw"], 12)
         self.assertNotEqual(first["latest_family"], second["latest_family"])
 
+    def test_sparse_exact_transition_is_shrunk_but_strong_evidence_can_override(self):
+        base_model = {
+            "alpha": 0.1,
+            "transition_prior_strength": 12.0,
+            "families": ["x", "y"],
+            "priors": {"x": 0.5, "y": 0.5},
+            "type_counts": {"outlier": Counter({"y": 20})},
+            "coarse_counts": {"rare_coarse": Counter({"y": 5})},
+            "exact_counts": {"rare": Counter({"x": 1})},
+            "latest_pattern_type": "outlier",
+            "latest_coarse_family": "rare_coarse",
+            "latest_family": "rare",
+            "momentum_scores": {},
+        }
+        sparse_x, _ = family_dynamic_scores("x", base_model)
+        sparse_y, _ = family_dynamic_scores("y", base_model)
+        self.assertLess(sparse_x, 50.0)
+        self.assertGreater(sparse_y, 50.0)
+
+        strong_model = dict(base_model)
+        strong_model["exact_counts"] = {"rare": Counter({"x": 50})}
+        strong_x, _ = family_dynamic_scores("x", strong_model)
+        self.assertGreater(strong_x, 50.0)
+        self.assertGreater(strong_x, sparse_x)
+
     def test_momentum_uses_global_latest_draw_and_changes(self):
         records = [
             record(1, "mixed", "a"),
