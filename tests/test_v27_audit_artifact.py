@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from lotto_engine.config import NUMBER_COLUMNS, ROUND_COLUMN
@@ -45,6 +46,24 @@ class V27AuditArtifactTests(unittest.TestCase):
         self.assertIsNone(payload["value"])
         self.assertIsNone(payload["nested"][0])
         self.assertEqual(payload["nested"][1], 1.0)
+
+    def test_json_artifact_converts_numpy_scalars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit.json"
+            write_json_artifact(
+                {
+                    "tests": np.int64(640),
+                    "score": np.float64(51.25),
+                    "flag": np.bool_(True),
+                    "missing": np.float64(np.nan),
+                },
+                path,
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["tests"], 640)
+        self.assertEqual(payload["score"], 51.25)
+        self.assertIs(payload["flag"], True)
+        self.assertIsNone(payload["missing"])
 
 
 if __name__ == "__main__":

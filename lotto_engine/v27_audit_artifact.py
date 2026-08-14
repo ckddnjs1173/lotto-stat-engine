@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .config import NUMBER_COLUMNS, ROUND_COLUMN
 
 
@@ -47,12 +49,19 @@ def current_git_commit(project_root: Path) -> str | None:
 
 
 def _json_safe(value: Any) -> Any:
+    """Recursively convert pandas/numpy audit values to strict JSON primitives."""
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    if isinstance(value, np.ndarray):
+        return [_json_safe(item) for item in value.tolist()]
     if isinstance(value, dict):
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     if isinstance(value, float) and not math.isfinite(value):
         return None
+    if isinstance(value, Path):
+        return str(value)
     return value
 
 
