@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import heapq
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from .candidates import generate_candidates, iter_all_combinations, make_seed
 from .config import (
@@ -27,6 +26,7 @@ from .scoring import SCORE_WEIGHTS, score_candidate
 MODEL_VERSION = "v2.7"
 RELEASE_STATUS = "release_candidate"
 SELECTION_STRATEGY = "pure_static_score_top_k"
+KST = timezone(timedelta(hours=9), name="KST")
 SCORE_DISCLAIMER = (
     "score는 실제 당첨확률이 아닙니다. 최신 반영 회차까지의 데이터로 계산한 "
     "정적 통계 순위 점수이며, 모든 유효 6/45 조합은 후보가 될 수 있습니다."
@@ -168,7 +168,7 @@ def generate_release_recommendations(
         "meta": {
             "model_version": MODEL_VERSION,
             "release_status": RELEASE_STATUS,
-            "generated_at_kst": datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds"),
+            "generated_at_kst": datetime.now(KST).isoformat(timespec="seconds"),
             "latest_draw": latest_draw,
             "target_draw": target_draw,
             "historical_draw_count": int(len(df)),
