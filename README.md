@@ -1,91 +1,125 @@
-# Lotto Stat Engine Final - Latest-Data Dynamic Structure
+# Lotto Stat Engine v2.7
 
-This is the production 6/45 engine. `prediction_score` is an internal empirical
+Lotto 6/45 statistical ranking engine. `score` / `prediction_score` is an internal
 ranking score, not an actual winning probability.
 
-## Production workflow
+## v2.7 production policy
 
-1. Add the newest winning draw to `data/lotto.xlsx`.
-2. Run the engine; it automatically detects `latest_draw`.
-3. It rebuilds every historical structure, subtype, family, adjacent-transition,
-   and decay-momentum statistic through that draw.
-4. It exhaustively scores all 8,145,060 valid 6/45 combinations.
-5. It recommends exactly 10 combinations for `latest_draw + 1`.
+- Every valid 6/45 combination remains eligible: `C(45, 6) = 8,145,060`.
+- There are no hard number, pattern, aesthetic, or portfolio filters.
+- Production selection is pure global TOP-10 by the frozen v2.7 static score.
+- Transition and momentum are disabled in production after v2.7 validation.
+- Type-wise score calibration is disabled because Phase 2 did not improve ranking.
+- AR/ARIMA, regime, and change-point logic are not part of v2.7 production.
+- Research modules remain in the repository for reproducibility but are not called by
+  the v2.7 production entrypoints.
 
-No draw number is hardcoded. The latest real draw is always the prediction
-state, and adding a valid row requires no source-code changes.
+See `docs/v27_release_candidate.md` for the freeze decision and validation routing.
 
 ## Production score
 
+### Normal / outlier branch
+
+The established branch components are reused, but the positive legacy
+`transition_score` contribution is removed. The remaining positive static weights
+are renormalized:
+
 ```text
-prediction_score =
-0.70 * base_score
-+ 0.15 * transition_lift_score
-+ 0.15 * momentum_lift_score
+outlier_survival_score  0.45
+type_balance_score      0.25
+normal_structure_score  0.15
 ```
 
-The base score preserves the established structural evidence: empirical and
-interaction lift, robust backbone, controlled extremes, and subtype/family
-structure.
+`historical_pattern_score` and `number_dynamics_score` remain zero-weight diagnostic
+components.
 
-Transition evidence uses only real chronological `t -> t+1` pairs. Sparse rows
-are not trusted directly: target-family probabilities are hierarchically shrunk
-from the global family prior through pattern type and coarse family to the exact
-latest family. The current transition prior strength is a conservative research
-value, not a fitted winning-probability parameter.
+### Mixed branch
 
-Production momentum is anchored at the global latest draw and uses all draw
-types. Exponentially decayed recent family mass is shrunk toward the long-run
-family distribution before converting recent/long-run lift to the 0-100 score.
-A lift of 1 maps to the neutral score 50.
+The existing Mixed static base is used with dynamic Markov/momentum context removed:
 
-Type and mixed-family allocations are recomputed on every run and applied only
-as bounded portfolio preferences. Candidate retention is partitioned by pattern
-type so one high-scoring type cannot erase all other types before final portfolio
-selection. Every valid combination remains eligible; there are no structural
-hard filters, bonus-number scores, or aesthetic number rules.
+```text
+0.35 * mixed_lift_score
++ 0.25 * mixed_interaction_score
++ 0.20 * normal_backbone_score
++ 0.15 * controlled_extreme_score
++ 0.05 * recency_consistency_score
+```
 
-## Evidence policy
+No transition or momentum term is added after the Mixed base score.
 
-New statistical ideas are researched independently before they are allowed into
-the production score. A component is not promoted because it sounds plausible or
-because it matches the latest draw. Evaluation uses strict rolling-origin
-walk-forward tests: target draw `t` may use only draws `< t`.
+## Production workflow
 
-### Rejected: standalone number hot/cold frequency
-
-`number_bayes_evidence_v1` tested full-history and exponentially decayed Bayesian
-marginal number frequencies against the fair `6/45` null across 1,135 strict
-walk-forward targets. All predeclared variants produced negative Brier skill and
-worse log loss overall, in the most recent 300 targets, and in the most recent
-100 targets. Therefore standalone hot/cold or recent-number frequency is not a
-production feature.
-
-### Research: pair frequency / interaction
-
-`pair_bayes_evidence_v1` tests all 990 unordered number pairs against the fair
-pair-inclusion probability `1/66`. It is research-only. Pair evidence must improve
-out-of-sample proper scores before any pair-derived component can be considered
-for production scoring.
-
-## Commands
+1. Update `data/lotto.xlsx` with the newest completed draw.
+2. Run the recommendation command.
+3. The engine detects the latest draw automatically.
+4. It evaluates all 8,145,060 valid combinations by default.
+5. It returns exactly TOP-10 for `latest_draw + 1`.
 
 ```powershell
-python -m unittest discover -s tests -v
-python scripts\validate_data.py
-python scripts\analyze_mixed_subtypes.py
-python scripts\run_mixed_backtest.py
-python scripts\run_number_evidence_backtest.py
-python scripts\run_pair_evidence_backtest.py
 python scripts\run_recommend.py
 ```
 
-Use a limited smoke run to verify output wiring without performing the full
-exhaustive production run:
+To write the site/API JSON contract in the same run:
 
 ```powershell
-python -c "from lotto_engine.recommender import generate_recommendations, print_recommendations; print_recommendations(generate_recommendations(exhaustive=False, candidate_count=10000))"
+python scripts\run_recommend.py --output-json data\cache\v27_recommendations.json
 ```
 
-Historical diagnostic scripts and the v2.2-v2.5 regression tests remain in the
-repository as supporting evidence; they are not separate production engines.
+Development smoke only:
+
+```powershell
+python scripts\run_recommend.py --sampled --candidate-count 2000 --top-k 10 --output-json data\cache\v27_rc_smoke.json
+```
+
+## Site integration
+
+`lotto_engine.v27_release.public_recommendation_payload()` is the stable v2.7 site
+contract. The JSON contains:
+
+- `model_version`
+- `release_status`
+- `generated_at_kst`
+- `latest_draw`
+- `target_draw`
+- `recommendation_mode`
+- `evaluated_count`
+- `selection_strategy`
+- `candidate_policy`
+- explicit transition/momentum disabled state
+- ranked recommendations with six numbers, score, pattern type, score origin, and
+  active component values
+
+`streamlit_app.py` already consumes the same v2.7 production module.
+
+## Validation summary
+
+The v2.7 research program used strict walk-forward evaluation and separate screening
+/ confirmation gates. Key release decisions:
+
+- Phase 2: type-wise calibration rejected.
+- Phase 3A: no serial-dependence, recent-shift, change-point, or pattern-transition
+  confirmation candidate.
+- Phase 4: transition rejected; momentum showed a positive long-run displacement but
+  failed the predeclared recent-100 confirmation gate.
+- Phase 5 static-component research was stopped when v2.7 moved from research to
+  release completion.
+
+This means v2.7 should be described as a statistical ranking system, not a proven
+increase in the mathematical probability of a lottery draw.
+
+## Release verification
+
+Implementation work uses only targeted tests. At the release boundary run the full
+suite once, then one exhaustive end-to-end recommendation run.
+
+Targeted release test:
+
+```powershell
+python -m unittest discover -s tests -p "test_v27_release.py" -v
+```
+
+Release-boundary regression:
+
+```powershell
+python -m unittest discover -s tests -v
+```
