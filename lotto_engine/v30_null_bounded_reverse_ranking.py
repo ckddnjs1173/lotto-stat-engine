@@ -87,7 +87,12 @@ def build_null_reference_matrix(
     round_no: int,
     reference_samples: int = REFERENCE_SAMPLES_PER_TARGET,
 ) -> np.ndarray:
-    """Build the deterministic target-time fair-null feature reference."""
+    """Build sorted per-feature fair-null reference columns for one target.
+
+    Cross-feature row identity is not used by the midrank transform, so each feature
+    column is sorted once here. Candidate transformations can then use binary search
+    without re-sorting the same 1,024 values for every scored candidate.
+    """
     reference_samples = int(reference_samples)
     rng = random.Random(
         int(round_no) * 300_007
@@ -95,10 +100,11 @@ def build_null_reference_matrix(
         + REFERENCE_SEED_OFFSET
     )
     candidates = _sample_null_reference(rng, reference_samples)
-    return np.asarray(
+    matrix = np.asarray(
         [candidate_feature_vector(candidate, context) for candidate in candidates],
         dtype=float,
     )
+    return np.sort(matrix, axis=0)
 
 
 def null_midrank_transform(
@@ -106,6 +112,9 @@ def null_midrank_transform(
     reference_matrix: np.ndarray,
 ) -> np.ndarray:
     """Map each raw feature to a bounded fair-null midrank coordinate in [-1, 1].
+
+    `reference_matrix` is expected to contain independently sorted feature columns,
+    as returned by `build_null_reference_matrix`.
 
     For feature j, let F_j be the empirical fair-reference distribution available
     before the target is revealed. The transformed coordinate is
@@ -131,7 +140,7 @@ def null_midrank_transform(
     transformed = np.empty_like(raw, dtype=float)
     n = reference.shape[0]
     for index, value in enumerate(raw):
-        column = np.sort(reference[:, index])
+        column = reference[:, index]
         left = int(np.searchsorted(column, value, side="left"))
         right = int(np.searchsorted(column, value, side="right"))
         midrank_cdf = (left + right) / (2.0 * n)
