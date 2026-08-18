@@ -6,11 +6,10 @@ from lotto_engine.v27_release import generate_release_recommendations, public_re
 
 st.set_page_config(page_title="Lotto Stat Engine v2.7.1", page_icon="🎲", layout="wide")
 st.title("LOTTO STAT ENGINE v2.7.1")
-st.caption("Unified Bayesian number + pair evidence · all valid 6/45 combinations remain eligible")
+st.caption("Unified Bayesian evidence research candidate · all valid 6/45 combinations remain eligible")
 st.warning(
-    "표시되는 score는 실제 당첨확률이 아닙니다. 번호와 pair의 Bayesian evidence를 동일한 "
-    "fair-null 기준에서 계산하고, strict walk-forward Brier skill로 각 evidence의 영향력을 "
-    "자동 축소한 내부 순위 점수입니다."
+    "표시되는 score는 실제 당첨확률이 아닙니다. 번호/페어 Bayesian evidence는 strict walk-forward "
+    "검증으로 영향력이 자동 축소되며, Normal/Mixed/Outlier 분류는 순위 계산에 사용되지 않습니다."
 )
 
 with st.expander("개발용 평가 옵션", expanded=False):
@@ -26,7 +25,7 @@ with st.expander("개발용 평가 옵션", expanded=False):
     seed_offset = st.number_input("Seed Offset", min_value=0, max_value=9999, value=0, step=1)
 
 if st.button("추천번호 생성", type="primary"):
-    with st.spinner("최신 데이터의 evidence reliability를 검증하고 후보를 평가하고 있습니다..."):
+    with st.spinner("Bayesian evidence로 조합을 평가하고 있습니다..."):
         try:
             payload = generate_release_recommendations(
                 seed_offset=int(seed_offset),
@@ -39,6 +38,7 @@ if st.button("추천번호 생성", type="primary"):
 
     public = public_recommendation_payload(payload)
     st.info(public["score_disclaimer"])
+    diagnostics = public["evidence_diagnostics"]
     st.write({
         "모델": public["model_version"],
         "상태": public["release_status"],
@@ -47,49 +47,29 @@ if st.button("추천번호 생성", type="primary"):
         "평가 방식": public["recommendation_mode"],
         "평가 조합 수": public["evaluated_count"],
         "선정 방식": public["selection_strategy"],
-        "패턴 타입 용도": public["pattern_type_role"],
+        "번호 reliability": diagnostics["number"]["reliability"],
+        "pair reliability": diagnostics["pair"]["reliability"],
     })
 
-    evidence = public.get("evidence_models", {})
-    if evidence:
-        st.subheader("Evidence reliability")
-        rows = []
-        for label in ("number", "pair"):
-            detail = evidence.get(label, {})
-            if not detail:
-                continue
-            skills = detail.get("brier_skill_vs_uniform", {})
-            rows.append({
-                "evidence": label,
-                "model": detail.get("spec", {}).get("name"),
-                "reliability": detail.get("reliability", 0.0),
-                "Brier skill overall": skills.get("overall", 0.0),
-                "Brier skill recent300": skills.get("recent300", 0.0),
-                "Brier skill recent100": skills.get("recent100", 0.0),
-            })
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-        st.caption(
-            "reliability가 작을수록 해당 evidence가 최종 랭킹에 미치는 영향도 자동으로 작아집니다. "
-            "음의 Brier skill은 반대 예측 신호로 뒤집어 사용하지 않습니다."
+    if diagnostics["total_active_reliability"] <= 0:
+        st.error(
+            "현재 번호와 pair reliability가 모두 0입니다. 아래 TOP-K는 예측 순위가 아니라 "
+            "동점 처리 결과이므로 구매용 추천으로 해석하면 안 됩니다. 먼저 combination-ranking "
+            "audit 결과를 확인해야 합니다."
         )
 
-    st.subheader("v2.7.1 통합 evidence TOP 10")
+    st.subheader("v2.7.1 Evidence TOP 10")
     for item in public["recommendations"]:
         with st.container(border=True):
             st.markdown(f"### #{item['rank']} · {item['pattern_type']}")
             st.markdown("  ".join(f"**{number}**" for number in item["numbers"]))
             st.write(f"score: {item['score']:.8f}")
-            st.caption(
-                f"ranking evidence: {item['ranking_score']:.12f} · "
-                f"{item['score_origin']} · pattern type is metadata only"
-            )
+            st.write(f"ranking evidence: {item['ranking_evidence']:.12f}")
+            st.caption(item["score_origin"])
             st.dataframe(
                 [{"component": key, "value": value} for key, value in item["components"].items()],
                 use_container_width=True,
                 hide_index=True,
             )
 else:
-    st.info(
-        "추천번호 생성 버튼을 누르면 먼저 현재 data/lotto.xlsx로 number/pair walk-forward reliability를 "
-        "계산한 뒤, 기본적으로 전체 8,145,060개 조합을 동일한 evidence 식으로 평가합니다."
-    )
+    st.info("기본 모드는 전체 8,145,060개 조합 평가입니다. 연구 검증 중에는 sampled smoke를 먼저 사용하세요.")
