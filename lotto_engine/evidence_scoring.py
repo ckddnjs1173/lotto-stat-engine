@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from itertools import combinations
 
 import numpy as np
 import pandas as pd
@@ -21,6 +20,7 @@ EVIDENCE_PROFILE_VERSION = "unified_bayesian_evidence_v1"
 NUMBER_COUNT = 45
 DRAW_SIZE = 6
 PAIR_MATRIX_WIDTH = NUMBER_COUNT + 1
+PAIRS_PER_CANDIDATE = 15
 
 # Production-facing research specs are deliberately fixed before the target draw.
 # Phase 3A found no durable recent-shift/regime evidence, so the unified scorer uses
@@ -145,12 +145,15 @@ def score_unified_evidence(numbers, evidence_profile: dict) -> dict:
     pair_lifts = evidence_profile["pair_log_lifts"]
     number_log_lift = sum(float(number_lifts[number]) for number in nums) / DRAW_SIZE
 
+    # Hot path for exhaustive 8,145,060-combination ranking. Avoid allocating an
+    # itertools.combinations object for every candidate; six numbers always imply
+    # exactly 15 pair lookups.
     pair_total = 0.0
-    pair_count = 0
-    for left, right in combinations(nums, 2):
-        pair_total += float(pair_lifts[left * PAIR_MATRIX_WIDTH + right])
-        pair_count += 1
-    pair_log_lift = pair_total / pair_count
+    for left_index in range(DRAW_SIZE - 1):
+        left_offset = nums[left_index] * PAIR_MATRIX_WIDTH
+        for right_index in range(left_index + 1, DRAW_SIZE):
+            pair_total += float(pair_lifts[left_offset + nums[right_index]])
+    pair_log_lift = pair_total / PAIRS_PER_CANDIDATE
 
     number_reliability = float(evidence_profile.get("number_reliability", 0.0))
     pair_reliability = float(evidence_profile.get("pair_reliability", 0.0))
