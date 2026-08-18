@@ -1,6 +1,6 @@
 # v2.7.1 Brier Reliability Result
 
-Status: implementation verified; current number/pair Brier reliability is neutral.
+Status: implementation verified; number/pair Brier reliability neutral; superseded by direct ranking rejection.
 
 ## Run identity
 
@@ -30,7 +30,7 @@ Strict walk-forward Brier skill versus uniform:
 - recent 100: `-0.0011491355`
 - derived reliability: `0.0000000000`
 
-All three windows are worse than the fair uniform marginal forecast, so the continuous Brier reliability rule correctly shrinks number evidence to zero.
+All three windows were worse than the fair uniform marginal forecast, so the continuous Brier reliability rule shrank number evidence to zero.
 
 ## Pair evidence
 
@@ -48,35 +48,30 @@ Strict walk-forward Brier skill versus uniform:
 - recent 100: `-0.0004752381`
 - derived reliability: `0.0000000000`
 
-All three windows are worse than the fair pair marginal forecast, so pair evidence is also shrunk to zero under the Brier reliability rule.
+All three windows were worse than the fair pair marginal forecast, so pair evidence was also shrunk to zero.
 
 ## Smoke ranking consequence
 
-Because both reliabilities are exactly zero, every candidate has `ranking_evidence == 0` up to signed floating-point zero and the display transform returns `prediction_score == 50`.
+Because both reliabilities were exactly zero, every candidate had neutral weighted evidence and the display transform returned `prediction_score == 50`.
 
-The smoke TOP-10 therefore must **not** be interpreted as predictive ordering. It is only the deterministic exact-tie selection path being exercised successfully.
+The smoke TOP-10 therefore was not predictive ordering; it only exercised deterministic exact-tie handling. Raw number/pair log-lifts were correctly computed and reached the recommendation path, but their validated contribution was zero.
 
-The raw number and pair log-lifts are still computed and visible in the breakdown, but they make no contribution while reliability is zero.
+## Follow-up ranking audit
 
-## Interpretation
+A separate strict walk-forward audit then tested the application target directly: rank the actual historical winning combination against fair random valid 6/45 alternatives.
 
-This result demonstrates that the research-to-recommendation wiring now works: raw Bayesian evidence reaches the recommendation path and validation controls its influence. It does **not** establish that the raw evidence family has no ranking information.
+That audit also produced no survivor:
 
-Brier score evaluates probability calibration over all 45 marginal numbers or all 990 marginal pairs. The application target is different: rank the actual six-number winning combination above fair alternative combinations.
+- number overall percentile: `48.6213`;
+- pair overall percentile: `49.7819`;
+- frozen 50:50 fusion overall percentile: `49.3711`;
+- all 95% block-bootstrap intervals crossed or remained below zero relative to percentile 50;
+- no 2,000-sample confirmation was authorized.
 
-Therefore the next frozen audit is a direct strict walk-forward combination-ranking test:
+See `docs/v271_ranking_evidence_result.md`.
 
-- actual winning combination versus fair random valid 6/45 combinations;
-- number raw log-lift track;
-- pair raw log-lift track;
-- predeclared equal-family fusion track;
-- no pattern-type conditioning;
-- no production weight change from the screening result alone.
+## Final interpretation
 
-Run:
+The v2.7.1 wiring worked correctly, but the tested full-history number/pair posterior family did not establish predictive ranking evidence.
 
-```powershell
-python scripts\run_v271_ranking_evidence_audit.py --baseline-samples 500 --bootstrap-reps 2000 --progress-every 50 --output-json data\cache\v271_ranking_screen.json
-```
-
-A screening survivor earns a separate 2,000-fair-combination-per-target confirmation. A failed screen is not rescued by post-hoc prior or half-life tuning.
+The active research hypothesis has therefore moved to the original reverse-learning concept expressed as a strict nested rolling ranker. See `docs/v28_reverse_ranking_spec.md`.
