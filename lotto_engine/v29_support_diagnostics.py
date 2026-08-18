@@ -9,6 +9,7 @@ from typing import Iterable
 import numpy as np
 
 from .candidates import random_combination
+from .config import ROUND_COLUMN
 from .loader import load_lotto_data
 from .v28_reverse_ranking import FEATURE_NAMES as BASE_FEATURE_NAMES, candidate_feature_vector
 from .v29_quadratic_reverse_ranking import (
@@ -228,7 +229,7 @@ def run_v29_support_diagnostics(
         "version": "v29_support_extrapolation_diagnostic_v1",
         "diagnostic_only": True,
         "score_modified": False,
-        "latest_draw": int(len(df)),
+        "latest_draw": int(df.iloc[-1][ROUND_COLUMN]),
         "reference_samples": reference_samples,
         "reference_seed": int(seed),
         "reference_policy": "unique fair 6-of-45 combinations in the same next-draw context",
