@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from lotto_engine.v31_final_directional_recommendation import generate_recommendations, write_json
+from lotto_engine.v31_final_portfolio import generate_recommendations, write_json
 
 
 def _print_items(title: str, items: list[dict], portfolio: bool = False) -> None:
@@ -76,16 +76,29 @@ def main() -> None:
 
     portfolio_meta = meta["portfolio"]
     print(
-        "PORTFOLIO RULE: accept raw-score order while every pair of tickets shares <= "
-        f"{portfolio_meta['max_shared_numbers']} numbers; score is never modified"
+        "PORTFOLIO RULE: raw-score order, pairwise shared numbers <= "
+        f"{portfolio_meta['max_shared_numbers']}, each number <= "
+        f"{portfolio_meta['max_number_ticket_count']}/{portfolio_meta['requested_count']} tickets; "
+        "model score is never modified"
     )
     print(
-        "fair random reference: P(two 6/45 tickets share >=3 numbers)="
+        "fair references: P(two 6/45 tickets share >=3 numbers)="
         f"{portfolio_meta['fair_random_pair_overlap_ge_3_rate']:.4%}; "
+        "P(a fixed number exceeds exposure cap in independent fair tickets)="
+        f"{portfolio_meta['fair_random_fixed_number_exceeds_exposure_cap_rate']:.4%}"
+    )
+    print(
+        f"portfolio source pool={portfolio_meta['source_pool_size']:,}; "
+        f"complete={portfolio_meta['complete']} "
+        f"selected={portfolio_meta['selected_count']}/{portfolio_meta['requested_count']} "
         f"fallback_relaxed={portfolio_meta['fallback_relaxed']}"
     )
     print()
-    _print_items("DIVERSIFIED PORTFOLIO TOP-K (recommended ticket set)", payload["portfolio_recommendations"], portfolio=True)
+    _print_items(
+        "STRICT DIVERSIFIED PORTFOLIO TOP-K (recommended ticket set)",
+        payload["portfolio_recommendations"],
+        portfolio=True,
+    )
 
     _print_audit("bias audit raw TOP pool", payload.get("bias_audit_top_pool", {}))
     _print_audit("portfolio audit", payload.get("portfolio_bias_audit", {}))
