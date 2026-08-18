@@ -2,6 +2,7 @@ import unittest
 
 from lotto_engine.v27_release import (
     MODEL_VERSION,
+    _seeded_fair_tiebreak,
     public_recommendation_payload,
     renormalized_static_score,
     without_dynamic_context,
@@ -9,7 +10,7 @@ from lotto_engine.v27_release import (
 
 
 class V27ReleaseTests(unittest.TestCase):
-    def test_static_score_excludes_legacy_transition_and_renormalizes(self):
+    def test_legacy_static_score_excludes_transition_for_reproducible_audit(self):
         breakdown = {
             "outlier_survival_score": 80.0,
             "type_balance_score": 60.0,
@@ -35,51 +36,67 @@ class V27ReleaseTests(unittest.TestCase):
         self.assertNotIn("dynamic_markov_decay", static)
         self.assertEqual(static["full"], source["full"])
 
-    def test_public_contract_uses_static_score_only(self):
+    def test_public_contract_exposes_unified_evidence(self):
         payload = {
             "meta": {
                 "model_version": MODEL_VERSION,
-                "release_status": "release_candidate",
-                "generated_at_kst": "2026-08-14T18:00:00+09:00",
+                "release_status": "research_candidate",
+                "generated_at_kst": "2026-08-18T11:00:00+09:00",
                 "latest_draw": 1235,
                 "target_draw": 1236,
                 "recommendation_mode": "sampled_candidates",
                 "evaluated_count": 100,
-                "selection_strategy": "pure_static_score_top_k",
+                "selection_strategy": "unified_bayesian_evidence_top_k",
                 "candidate_policy": "all valid 6-of-45 combinations; no hard filters",
                 "dynamic_components": {
                     "transition": "disabled_after_v2.7_validation",
                     "momentum": "disabled_after_v2.7_validation",
+                },
+                "static_structure_components": "diagnostic_only_after_phase5a_no_survivors",
+                "cross_type_calibration": "not_required_single_common_evidence_equation",
+                "pattern_type_role": "metadata_only_not_used_for_ranking",
+                "tie_break_policy": "seeded_structure_neutral_only_for_exact_evidence_ties",
+                "evidence_models": {
+                    "number": {"reliability": 0.01},
+                    "pair": {"reliability": 0.02},
                 },
                 "score_disclaimer": "test",
             },
             "recommendations": [{
                 "rank": 1,
                 "numbers": [1, 2, 3, 4, 5, 6],
-                "prediction_score": 77.5,
+                "prediction_score": 50.125,
+                "ranking_score": 0.0025,
                 "pattern_type": "mixed",
-                "score_origin": "mixed_static_base",
-                "score_breakdown": {"mixed_lift_score": 70.0},
+                "score_origin": "unified_bayesian_evidence_v1",
+                "score_breakdown": {
+                    "number_log_lift": 0.1,
+                    "pair_log_lift": 0.2,
+                },
             }],
         }
         public = public_recommendation_payload(payload)
         item = public["recommendations"][0]
-        self.assertEqual(public["model_version"], "v2.7")
-        self.assertEqual(item["score"], 77.5)
-        self.assertNotIn("transition_lift_score", item)
-        self.assertNotIn("momentum_lift_score", item)
+        self.assertEqual(public["model_version"], "v2.7.1")
+        self.assertEqual(public["pattern_type_role"], "metadata_only_not_used_for_ranking")
+        self.assertEqual(public["evidence_models"]["number"]["reliability"], 0.01)
+        self.assertEqual(item["score"], 50.125)
+        self.assertEqual(item["ranking_score"], 0.0025)
+        self.assertEqual(item["score_origin"], "unified_bayesian_evidence_v1")
+        self.assertNotIn("transition_lift_score", item["components"])
+        self.assertNotIn("momentum_lift_score", item["components"])
 
     def test_release_contract_declares_dynamic_components_disabled(self):
         payload = {
             "meta": {
-                "model_version": "v2.7",
-                "release_status": "release_candidate",
+                "model_version": MODEL_VERSION,
+                "release_status": "research_candidate",
                 "generated_at_kst": "x",
                 "latest_draw": 1,
                 "target_draw": 2,
                 "recommendation_mode": "x",
                 "evaluated_count": 1,
-                "selection_strategy": "pure_static_score_top_k",
+                "selection_strategy": "unified_bayesian_evidence_top_k",
                 "candidate_policy": "all valid 6-of-45 combinations; no hard filters",
                 "dynamic_components": {"transition": "disabled", "momentum": "disabled"},
                 "score_disclaimer": "x",
@@ -89,6 +106,11 @@ class V27ReleaseTests(unittest.TestCase):
         public = public_recommendation_payload(payload)
         self.assertTrue(public["dynamic_components"]["transition"].startswith("disabled"))
         self.assertTrue(public["dynamic_components"]["momentum"].startswith("disabled"))
+
+    def test_exact_tie_break_is_deterministic_and_number_order_independent(self):
+        first = _seeded_fair_tiebreak([1, 2, 3, 4, 5, 6], 1235)
+        second = _seeded_fair_tiebreak([1, 2, 3, 4, 5, 6], 1235)
+        self.assertEqual(first, second)
 
 
 if __name__ == "__main__":
