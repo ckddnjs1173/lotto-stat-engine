@@ -1,80 +1,80 @@
-# v2.7 Release Candidate Production Freeze
+# v2.7 Static Release Candidate — Superseded
 
-Status: research closed for v2.7; production completion in progress.
+Status: **superseded by Phase 5A and v2.7.1 evidence integration**.
 
-## Frozen production decisions
+This document originally froze the v2.7 static recommendation path and stated that
+Phase 5 static-component research could be deferred without blocking release. That
+statement is no longer current.
 
-The v2.7 validation program is closed for this release candidate. New statistical
-components are deferred to a later research version.
+## Why the freeze was withdrawn
 
-Production policy:
+Phase 5A was subsequently executed on data through draw 1235 using the predeclared
+same-pattern-type fair baseline. No Normal/Outlier or Mixed static component passed
+the screening gate, and the current branch-base benchmark itself did not establish a
+same-type ranking advantage.
+
+See:
+
+- `docs/v27_phase5_static_component_spec.md`
+- `docs/v27_phase5_static_component_result.md`
+
+The original static release path also left newer number/pair Bayesian evidence modules
+outside `scripts/run_recommend.py`, creating a research-to-production disconnect.
+
+## Decisions that remain valid
+
+The following v2.7 conclusions are retained:
 
 - all 8,145,060 valid Lotto 6/45 combinations remain eligible;
 - no hard structural filter is applied;
-- final selection is pure global TOP-K by the release static score;
-- portfolio quotas, subtype allocation, and diversity penalties are not used;
-- transition is disabled after Phase 3/4 failed to establish production evidence;
-- momentum is disabled because confirmation failed the predeclared recent-100 gate;
-- type-wise calibration is disabled because Phase 2 reduced predictive ranking;
-- AR/ARIMA, regime, and change-point logic remain out of scope after Phase 3A;
-- Phase 5 static-component research is deferred and does not block this release.
+- transition remains disabled after the v2.7 validation gate;
+- momentum remains disabled after failing the predeclared recent-100 confirmation
+  gate;
+- type-wise calibration remains rejected as a predictive improvement;
+- AR/ARIMA, regime, and change-point logic remain outside the recommendation path
+  because their prerequisites were not established.
 
-## Static score policy
+## Decisions that are superseded
 
-### Normal / outlier
+The following former release decisions must not be treated as current production
+policy:
 
-The existing branch score is reused, but the positive legacy `transition_score`
-contribution is removed. The remaining positive static weights are renormalized:
+- pure global TOP-K by the frozen legacy static score;
+- Normal/Outlier ranking by the renormalized static component blend;
+- Mixed ranking by the separate static Mixed base;
+- Phase 5 being optional for the release decision;
+- describing v2.7 as statistically complete.
 
-- outlier survival: 0.45
-- type balance: 0.25
-- normal structure: 0.15
+## Current path: v2.7.1 research candidate
 
-Historical-pattern and number-dynamics components retain zero production weight.
-No new weight optimization is performed.
+`lotto_engine.v27_release.generate_release_recommendations()` now routes ranking
+through the unified Bayesian evidence layer documented in
+`docs/v271_evidence_integration_spec.md`.
 
-### Mixed
+Current behavior:
 
-The existing Mixed static base is reused with `dynamic_markov_decay` removed from
-the scoring profile. Therefore `mixed_slot_score` equals the static Mixed base and
-contains no final transition/momentum composition.
+1. load the latest local `data/lotto.xlsx`;
+2. strict-walk-forward test the fixed number and pair Bayesian models against their
+   fair uniform nulls;
+3. convert OOS Brier skill into continuous reliability shrinkage;
+4. fit the same fixed posteriors on all completed draws;
+5. rank every candidate with one common number + pair evidence equation;
+6. attach Normal/Mixed/Outlier and other structure fields only after ranking as
+   metadata.
 
-## Selection
+v2.7.1 remains a `research_candidate`. It is not a claim that an individual Lotto
+combination has a proven mathematical probability advantage.
 
-The production iterator streams either all valid combinations or, for development
-smoke only, a deterministic sampled candidate set. A heap retains only the globally
-highest `TOP_K_RECOMMENDATIONS` static scores.
+## Required next verification
 
-No pattern-type allocation or portfolio adjustment changes the final order.
-
-## Public JSON contract
-
-`scripts/run_recommend.py --output-json <path>` writes a compact site-facing payload
-containing:
-
-- model version and release status;
-- generated time in Asia/Seoul;
-- latest reflected and target draw;
-- evaluation mode and evaluated combination count;
-- selection/candidate policy;
-- explicit dynamic-component disabled status;
-- rank, six numbers, score, pattern type, score origin, and active components.
-
-The public payload does not label the score as a probability.
-
-## Release verification policy
-
-During implementation, run only the targeted `test_v27_release.py` module and a
-small sampled smoke. The full test suite and one exhaustive end-to-end recommendation
-run are reserved for the final release boundary.
-
-Recommended pre-release sequence:
+After pulling the v2.7.1 integration, run:
 
 ```powershell
 git pull --ff-only
-python -m unittest discover -s tests -p "test_v27_release.py" -v
-python scripts\run_recommend.py --sampled --candidate-count 2000 --top-k 10 --output-json data\cache\v27_rc_smoke.json
+python -m unittest discover -s tests -v
+python scripts\run_recommend.py --sampled --candidate-count 2000 --top-k 10 --output-json data\cache\v271_evidence_smoke.json
 ```
 
-If those pass, perform the single release-boundary full regression and exhaustive
-end-to-end run. No additional research backtest is required for v2.7.
+The smoke output must be reviewed for the actual number/pair Brier skills and derived
+reliabilities from the current local data before an exhaustive run is treated as a
+release candidate result.
