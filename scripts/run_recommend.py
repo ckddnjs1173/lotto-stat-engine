@@ -18,8 +18,8 @@ from lotto_engine.v27_release import (
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate Lotto Stat Engine v2.7 recommendations")
-    parser.add_argument("--sampled", action="store_true", help="use sampled candidates instead of exhaustive production mode")
+    parser = argparse.ArgumentParser(description="Generate Lotto Stat Engine v2.7.1 evidence recommendations")
+    parser.add_argument("--sampled", action="store_true", help="use sampled candidates instead of exhaustive research mode")
     parser.add_argument("--candidate-count", type=int, default=DEFAULT_CANDIDATE_COUNT)
     parser.add_argument("--top-k", type=int, default=TOP_K_RECOMMENDATIONS)
     parser.add_argument("--seed-offset", type=int, default=0)
