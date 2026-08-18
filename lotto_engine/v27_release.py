@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import heapq
 import json
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,11 @@ from .config import (
     DEFAULT_EXHAUSTIVE_RECOMMENDATION,
     TOP_K_RECOMMENDATIONS,
 )
+from .evidence_scoring import (
+    build_unified_evidence_profile,
+    public_evidence_diagnostics,
+    score_unified_evidence,
+)
 from .loader import load_lotto_data
 from .mixed_scoring import (
     build_all_combination_baseline,
@@ -23,18 +29,24 @@ from .mixed_scoring import (
 from .profiles import build_profile
 from .scoring import SCORE_WEIGHTS, score_candidate
 
-MODEL_VERSION = "v2.7"
-RELEASE_STATUS = "release_candidate"
-SELECTION_STRATEGY = "pure_static_score_top_k"
+MODEL_VERSION = "v2.7.1"
+RELEASE_STATUS = "research_candidate"
+SELECTION_STRATEGY = "unified_bayesian_evidence_top_k"
 KST = timezone(timedelta(hours=9), name="KST")
 SCORE_DISCLAIMER = (
-    "score는 실제 당첨확률이 아닙니다. 최신 반영 회차까지의 데이터로 계산한 "
-    "정적 통계 순위 점수이며, 모든 유효 6/45 조합은 후보가 될 수 있습니다."
+    "score는 실제 당첨확률이 아닙니다. 동일한 6/45 fair-null을 기준으로 번호와 pair의 "
+    "Bayesian posterior evidence를 계산하고, strict walk-forward Brier skill로 영향력을 "
+    "자동 축소한 내부 순위 점수입니다."
 )
 
 
+# ---------------------------------------------------------------------------
+# Legacy v2.7 static helpers are retained for reproducible audit/tests only.
+# The production recommendation entry point below no longer calls them.
+# ---------------------------------------------------------------------------
+
 def without_dynamic_context(profile: dict) -> dict:
-    """Return a shallow static-only Mixed profile for v2.7 production ranking."""
+    """Return a shallow static-only Mixed profile for legacy v2.7 audit."""
     static_profile = dict(profile)
     static_profile.pop("dynamic_markov_decay", None)
     return static_profile
@@ -50,10 +62,7 @@ def renormalized_static_score(breakdown: dict[str, float]) -> tuple[float, dict[
     denominator = sum(active_weights.values())
     if denominator <= 0.0:
         raise ValueError("v2.7 static scorer requires at least one positive component weight")
-    active_breakdown = {
-        name: float(breakdown[name])
-        for name in active_weights
-    }
+    active_breakdown = {name: float(breakdown[name]) for name in active_weights}
     score = sum(active_weights[name] * active_breakdown[name] for name in active_weights) / denominator
     return float(score), active_breakdown
 
@@ -64,7 +73,7 @@ def score_static_record(
     mixed_profile: dict,
     feature_weights: dict[str, float],
 ) -> dict:
-    """Score one valid combination with the frozen v2.7 static production policy."""
+    """Score one combination with the frozen legacy v2.7 static policy."""
     if record["pattern_type"] == "mixed":
         scored = score_mixed_record(record, mixed_profile)
         score = float(scored["mixed_slot_score"])
@@ -108,7 +117,7 @@ def top_static_stream(
     feature_weights: dict[str, float],
     top_k: int,
 ) -> tuple[list[dict], int]:
-    """Keep only the globally highest static scores while streaming candidates."""
+    """Legacy static TOP-K helper retained for audit reproducibility."""
     heap: list[tuple[float, tuple[int, ...], dict]] = []
     evaluated = 0
     for evaluated, candidate in enumerate(candidates, 1):
@@ -120,13 +129,73 @@ def top_static_stream(
         elif entry[:2] > heap[0][:2]:
             heapq.heapreplace(heap, entry)
 
-    selected = [
-        entry[2]
-        for entry in sorted(heap, key=lambda value: (value[0], value[1]), reverse=True)
-    ]
+    selected = [entry[2] for entry in sorted(heap, key=lambda value: (value[0], value[1]), reverse=True)]
     for rank, item in enumerate(selected, 1):
         item["rank"] = rank
         item["strategy"] = "V2.7 STATIC TOP SCORE"
+    return selected, evaluated
+
+
+# ---------------------------------------------------------------------------
+# v2.7.1 unified evidence production/research-candidate path.
+# ---------------------------------------------------------------------------
+
+def _seeded_fair_tiebreak(numbers, seed: int) -> int:
+    """Structure-neutral deterministic tie-break used only for exact score ties."""
+    encoded = f"{int(seed)}:" + ",".join(str(int(number)) for number in numbers)
+    digest = hashlib.blake2b(encoded.encode("ascii"), digest_size=8).digest()
+    return int.from_bytes(digest, "big", signed=False)
+
+
+def _attach_structure_metadata(item: dict, profile: dict) -> dict:
+    """Classify a selected item after ranking; structure never changes its score."""
+    record = structure_record(item["numbers"], profile["latest_pattern_type"])
+    item["pattern_type"] = str(record["pattern_type"])
+    item["features"] = {
+        "sum": int(record["sum"]),
+        "odd_count": int(record["odd_count"]),
+        "number_range": int(record["number_range"]),
+        "max_gap": int(record["max_gap"]),
+        "min_gap": int(record["min_gap"]),
+        "section_distribution": list(record["section_distribution"]),
+    }
+    return item
+
+
+def top_evidence_stream(
+    candidates,
+    profile: dict,
+    evidence_profile: dict,
+    top_k: int,
+    seed: int,
+) -> tuple[list[dict], int]:
+    """Rank every candidate with one common number+pair evidence equation."""
+    heap: list[tuple[float, int, tuple[int, ...], dict]] = []
+    evaluated = 0
+    for evaluated, candidate in enumerate(candidates, 1):
+        item = score_unified_evidence(candidate, evidence_profile)
+        ranking_score = float(item["ranking_score"])
+        numbers = tuple(item["numbers"])
+        tie_break = _seeded_fair_tiebreak(numbers, seed)
+        entry = (ranking_score, tie_break, numbers, item)
+        if len(heap) < int(top_k):
+            heapq.heappush(heap, entry)
+        elif entry[:3] > heap[0][:3]:
+            heapq.heapreplace(heap, entry)
+
+    selected = [
+        entry[3]
+        for entry in sorted(heap, key=lambda value: (value[0], value[1], value[2]), reverse=True)
+    ]
+    for rank, item in enumerate(selected, 1):
+        _attach_structure_metadata(item, profile)
+        item["prediction_score"] = round(float(item["prediction_score"]), 8)
+        item["ranking_score"] = round(float(item["ranking_score"]), 12)
+        item["score_breakdown"] = {
+            name: round(float(value), 12) for name, value in item["score_breakdown"].items()
+        }
+        item["rank"] = rank
+        item["strategy"] = "V2.7.1 UNIFIED BAYESIAN EVIDENCE"
     return selected, evaluated
 
 
@@ -136,14 +205,15 @@ def generate_release_recommendations(
     exhaustive: bool = DEFAULT_EXHAUSTIVE_RECOMMENDATION,
     top_k: int = TOP_K_RECOMMENDATIONS,
 ) -> dict:
-    """Generate the v2.7 release-candidate recommendation payload."""
+    """Generate recommendations from current local data using unified evidence."""
     df = load_lotto_data()
     profile = build_profile(df)
-    records = build_draw_structure_records(df)
-    mixed_profile = without_dynamic_context(
-        build_mixed_profile(records, build_all_combination_baseline())
-    )
-    feature_weights = dict(BASE_WEIGHTS)
+
+    # This is the previously missing research -> production bridge. Reliability is
+    # recalculated from the exact local data used for the recommendation, then the
+    # next-draw posterior is fit on all completed draws.
+    evidence_profile = build_unified_evidence_profile(df)
+    evidence_diagnostics = public_evidence_diagnostics(evidence_profile)
 
     latest_draw = int(profile["latest_round"])
     target_draw = latest_draw + 1
@@ -156,12 +226,12 @@ def generate_release_recommendations(
         candidates = generate_candidates(int(candidate_count), seed)
         mode = "sampled_candidates"
 
-    recommendations, evaluated_count = top_static_stream(
+    recommendations, evaluated_count = top_evidence_stream(
         candidates,
         profile,
-        mixed_profile,
-        feature_weights,
+        evidence_profile,
         int(top_k),
+        seed,
     )
 
     return {
@@ -184,12 +254,17 @@ def generate_release_recommendations(
                 "transition": "disabled_after_v2.7_validation",
                 "momentum": "disabled_after_v2.7_validation",
             },
-            "cross_type_calibration": "disabled_after_phase2_rejection",
-            "feature_weight_source": "config.BASE_WEIGHTS",
+            "static_structure_components": "diagnostic_only_after_phase5a_no_survivors",
+            "cross_type_calibration": "not_required_single_common_evidence_equation",
+            "pattern_type_role": "metadata_only_not_used_for_ranking",
+            "tie_break_policy": "seeded_structure_neutral_only_for_exact_evidence_ties",
+            "evidence_models": evidence_diagnostics,
             "score_name": "prediction_score",
             "score_disclaimer": SCORE_DISCLAIMER,
         },
-        "feature_weights": feature_weights,
+        # Retained only so older consumers do not break. These legacy feature
+        # weights no longer drive v2.7.1 ranking.
+        "feature_weights": dict(BASE_WEIGHTS),
         "recommendations": recommendations,
     }
 
@@ -208,13 +283,19 @@ def public_recommendation_payload(payload: dict) -> dict:
         "selection_strategy": meta["selection_strategy"],
         "candidate_policy": meta["candidate_policy"],
         "dynamic_components": meta["dynamic_components"],
+        "static_structure_components": meta.get("static_structure_components"),
+        "cross_type_calibration": meta.get("cross_type_calibration"),
+        "pattern_type_role": meta.get("pattern_type_role"),
+        "tie_break_policy": meta.get("tie_break_policy"),
+        "evidence_models": meta.get("evidence_models", {}),
         "score_disclaimer": meta["score_disclaimer"],
         "recommendations": [
             {
                 "rank": int(item["rank"]),
                 "numbers": list(item["numbers"]),
                 "score": float(item["prediction_score"]),
-                "pattern_type": item["pattern_type"],
+                "ranking_score": float(item.get("ranking_score", item["prediction_score"])),
+                "pattern_type": item.get("pattern_type", "unknown"),
                 "score_origin": item["score_origin"],
                 "components": dict(item["score_breakdown"]),
             }
@@ -233,15 +314,29 @@ def write_public_json(payload: dict, output_path: str | Path) -> Path:
 
 def print_release_recommendations(payload: dict) -> None:
     meta = payload["meta"]
-    print("=" * 80)
-    print("LOTTO STAT ENGINE v2.7 - STATIC RELEASE CANDIDATE")
-    print("=" * 80)
+    print("=" * 88)
+    print("LOTTO STAT ENGINE v2.7.1 - UNIFIED BAYESIAN EVIDENCE RESEARCH CANDIDATE")
+    print("=" * 88)
     print(f"latest reflected draw: {meta['latest_draw']}")
     print(f"target draw: {meta['target_draw']}")
     print(f"evaluation mode: {meta['recommendation_mode']}")
     print(f"evaluated combinations: {meta['evaluated_count']}")
     print(f"selection: {meta['selection_strategy']}")
+    print("pattern type: metadata only; no type-specific ranking branch")
     print("dynamic components: transition=disabled, momentum=disabled")
+
+    evidence = meta.get("evidence_models", {})
+    for label in ("number", "pair"):
+        detail = evidence.get(label, {})
+        if not detail:
+            continue
+        skills = detail.get("brier_skill_vs_uniform", {})
+        print(
+            f"{label} evidence: reliability={float(detail.get('reliability', 0.0)):.10f} "
+            f"brier_skill overall={float(skills.get('overall', 0.0)):.10f} "
+            f"recent300={float(skills.get('recent300', 0.0)):.10f} "
+            f"recent100={float(skills.get('recent100', 0.0)):.10f}"
+        )
     print(meta["score_disclaimer"])
 
     for item in payload["recommendations"]:
@@ -249,8 +344,9 @@ def print_release_recommendations(payload: dict) -> None:
         print()
         print(f"#{item['rank']}  {numbers}")
         print(
-            f"score={item['prediction_score']:.4f} "
+            f"score={item['prediction_score']:.8f} "
+            f"ranking_evidence={item['ranking_score']:.12f} "
             f"type={item['pattern_type']} origin={item['score_origin']}"
         )
         for name, value in item["score_breakdown"].items():
-            print(f"  {name}: {value:.4f}")
+            print(f"  {name}: {value:.12f}")
