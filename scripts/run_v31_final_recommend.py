@@ -11,6 +11,38 @@ if str(PROJECT_ROOT) not in sys.path:
 from lotto_engine.v31_final_directional_recommendation import generate_recommendations, write_json
 
 
+def _print_items(title: str, items: list[dict], portfolio: bool = False) -> None:
+    print(title)
+    print("-" * 100)
+    for item in items:
+        rank = item.get("portfolio_rank") if portfolio else item.get("rank")
+        nums = " ".join(str(n) for n in item["numbers"])
+        suffix = ""
+        if portfolio:
+            suffix = f" raw_pool_rank={item['raw_rank_within_retained_pool']}"
+        print(f"#{rank}  {nums}{suffix}")
+        print(f"model_score={item['model_score']:.12f} type={item['pattern_type']}")
+        for term in item["feature_contributions"][:5]:
+            print(
+                f"  {term['feature']}: contribution={term['contribution']:.12f} "
+                f"weight={term['weight']:.12f} bounded={term['bounded_value']:.12f}"
+            )
+        print()
+
+
+def _print_audit(label: str, audit: dict) -> None:
+    if not audit:
+        return
+    rates = audit["number_inclusion_rates"]
+    most = sorted(rates.items(), key=lambda kv: kv[1], reverse=True)[:8]
+    print(f"{label}: {audit['pool_size']}")
+    print(f"mean sum={audit['mean_sum']:.3f} range=[{audit['min_sum']}, {audit['max_sum']}]")
+    print(f"one-digit present rate={audit['one_digit_present_rate']:.4f}")
+    print("zone slot rates: " + ", ".join(f"{k}={v:.4f}" for k, v in audit["zone_slot_rates"].items()))
+    print("most frequent numbers: " + ", ".join(f"{n}:{rate:.3f}" for n, rate in most))
+    print()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Final personal directional fair-null lotto recommendation")
     parser.add_argument("--sampled", action="store_true")
@@ -40,26 +72,23 @@ def main() -> None:
     print("direction preserved; bounded fair-null coordinates; additive model; no pattern quota")
     print()
 
-    for item in payload["recommendations"]:
-        nums = " ".join(str(n) for n in item["numbers"])
-        print(f"#{item['rank']}  {nums}")
-        print(f"model_score={item['model_score']:.12f} type={item['pattern_type']}")
-        for term in item["feature_contributions"][:5]:
-            print(
-                f"  {term['feature']}: contribution={term['contribution']:.12f} "
-                f"weight={term['weight']:.12f} bounded={term['bounded_value']:.12f}"
-            )
-        print()
+    _print_items("RAW MODEL TOP-K (score order unchanged)", payload["recommendations"])
 
-    audit = payload.get("bias_audit_top_pool", {})
-    if audit:
-        rates = audit["number_inclusion_rates"]
-        most = sorted(rates.items(), key=lambda kv: kv[1], reverse=True)[:8]
-        print(f"bias audit pool: TOP {audit['pool_size']}")
-        print(f"mean sum={audit['mean_sum']:.3f} range=[{audit['min_sum']}, {audit['max_sum']}]")
-        print(f"one-digit present rate={audit['one_digit_present_rate']:.4f}")
-        print("zone slot rates: " + ", ".join(f"{k}={v:.4f}" for k, v in audit["zone_slot_rates"].items()))
-        print("most frequent numbers in audit pool: " + ", ".join(f"{n}:{rate:.3f}" for n, rate in most))
+    portfolio_meta = meta["portfolio"]
+    print(
+        "PORTFOLIO RULE: accept raw-score order while every pair of tickets shares <= "
+        f"{portfolio_meta['max_shared_numbers']} numbers; score is never modified"
+    )
+    print(
+        "fair random reference: P(two 6/45 tickets share >=3 numbers)="
+        f"{portfolio_meta['fair_random_pair_overlap_ge_3_rate']:.4%}; "
+        f"fallback_relaxed={portfolio_meta['fallback_relaxed']}"
+    )
+    print()
+    _print_items("DIVERSIFIED PORTFOLIO TOP-K (recommended ticket set)", payload["portfolio_recommendations"], portfolio=True)
+
+    _print_audit("bias audit raw TOP pool", payload.get("bias_audit_top_pool", {}))
+    _print_audit("portfolio audit", payload.get("portfolio_bias_audit", {}))
 
     saved = write_json(payload, args.output_json)
     print(f"personal JSON saved: {saved}")
