@@ -30,8 +30,7 @@ Strict walk-forward Brier skill versus uniform:
 - recent 100: `-0.0011491355`
 - derived reliability: `0.0000000000`
 
-All three windows are worse than the fair uniform marginal forecast, so the
-continuous Brier reliability rule correctly shrinks number evidence to zero.
+All three windows are worse than the fair uniform marginal forecast, so the continuous Brier reliability rule correctly shrinks number evidence to zero.
 
 ## Pair evidence
 
@@ -49,34 +48,23 @@ Strict walk-forward Brier skill versus uniform:
 - recent 100: `-0.0004752381`
 - derived reliability: `0.0000000000`
 
-All three windows are worse than the fair pair marginal forecast, so pair evidence
-is also shrunk to zero under the Brier reliability rule.
+All three windows are worse than the fair pair marginal forecast, so pair evidence is also shrunk to zero under the Brier reliability rule.
 
 ## Smoke ranking consequence
 
-Because both reliabilities are exactly zero, every candidate has
-`ranking_evidence == 0` up to signed floating-point zero and the display transform
-returns `prediction_score == 50`.
+Because both reliabilities are exactly zero, every candidate has `ranking_evidence == 0` up to signed floating-point zero and the display transform returns `prediction_score == 50`.
 
-The smoke TOP-10 therefore must **not** be interpreted as predictive ordering. It is
-only the deterministic exact-tie selection path being exercised successfully.
+The smoke TOP-10 therefore must **not** be interpreted as predictive ordering. It is only the deterministic exact-tie selection path being exercised successfully.
 
-The raw number and pair log-lifts are still computed and visible in the breakdown,
-but they make no contribution while reliability is zero.
+The raw number and pair log-lifts are still computed and visible in the breakdown, but they make no contribution while reliability is zero.
 
 ## Interpretation
 
-This result demonstrates that the research-to-production wiring now works: raw
-Bayesian evidence reaches the recommendation path and validation controls its
-influence. It does **not** establish that the raw evidence family has no ranking
-information.
+This result demonstrates that the research-to-recommendation wiring now works: raw Bayesian evidence reaches the recommendation path and validation controls its influence. It does **not** establish that the raw evidence family has no ranking information.
 
-Brier score evaluates probability calibration over all 45 marginal numbers or all
-990 marginal pairs. The application target is different: rank the actual six-number
-winning combination above fair alternative combinations.
+Brier score evaluates probability calibration over all 45 marginal numbers or all 990 marginal pairs. The application target is different: rank the actual six-number winning combination above fair alternative combinations.
 
-Therefore the next frozen audit is a direct strict walk-forward combination-ranking
-test:
+Therefore the next frozen audit is a direct strict walk-forward combination-ranking test:
 
 - actual winning combination versus fair random valid 6/45 combinations;
 - number raw log-lift track;
@@ -85,5 +73,10 @@ test:
 - no pattern-type conditioning;
 - no production weight change from the screening result alone.
 
-See `scripts/run_v271_ranking_evidence_audit.py` and
-`lotto_engine/v271_ranking_evidence_audit.py`.
+Run:
+
+```powershell
+python scripts\run_v271_ranking_evidence_audit.py --baseline-samples 500 --bootstrap-reps 2000 --progress-every 50 --output-json data\cache\v271_ranking_screen.json
+```
+
+A screening survivor earns a separate 2,000-fair-combination-per-target confirmation. A failed screen is not rescued by post-hoc prior or half-life tuning.
