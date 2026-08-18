@@ -1,141 +1,92 @@
-# Lotto Stat Engine v2.7.1
+# Lotto Stat Engine Research Branch
 
-Lotto 6/45 statistical ranking research candidate. `score` / `prediction_score` is an internal ranking score, not an actual winning probability.
+Lotto 6/45 statistical ranking research engine. Any displayed `score` or
+`prediction_score` is an internal ranking value, not an actual jackpot probability.
 
 ## Current research status
 
-Phase 5A completed the previously deferred static-component audit. No legacy Normal/Outlier or Mixed static component survived the predeclared strict walk-forward same-type screen. The former v2.7 frozen static release path is therefore superseded.
+The former v2.7 static release path has been superseded by later validation.
 
-The v2.7.1 recommendation path now connects the newer Bayesian evidence modules to the actual recommendation entry point:
+Completed findings:
 
-- all `C(45, 6) = 8,145,060` valid combinations remain eligible;
-- no hard number, structure, aesthetic, subtype, or portfolio filters;
-- one common ranking equation for Normal/Mixed/Outlier candidates;
-- number posterior evidence is measured against the fair `6/45` marginal null;
-- pair posterior evidence is measured against the fair `1/66` pair null;
-- strict walk-forward validation controls how much each evidence family can affect ranking;
-- transition and momentum remain disabled after the v2.7 validation program;
-- pattern type is attached only after ranking as descriptive metadata.
+- all `C(45,6) = 8,145,060` valid combinations remain eligible;
+- no hard structural/aesthetic filter is justified;
+- Phase 3A did not establish serial dependence, regime shift, or first-order pattern transition evidence;
+- transition was rejected;
+- momentum failed its predeclared recent-100 confirmation gate;
+- Phase 5A found no survivor among the legacy static scoring components;
+- v2.7.1 number/pair Bayesian posterior evidence was worse than the fair null on Brier reliability;
+- the same number/pair posterior family also produced no survivor when tested directly on actual-winning-combination rank versus fair random combinations.
 
-See:
+The current production-facing v2.7.1 recommendation path therefore remains neutral when its validated reliability is zero. A 50-point tied recommendation output must not be interpreted as predictive ordering.
 
-- `docs/v27_phase5_static_component_result.md`
-- `docs/v271_evidence_integration_spec.md`
-- `docs/v271_brier_reliability_result.md`
+## v2.8 reverse-learning research
 
-## Current production-facing research equation
+The next hypothesis implements the original reverse-statistics idea with strict target isolation.
 
-For candidate combination `c`:
+Historical draw 101 is treated as the first solved ranking problem using only draws 1..100 to construct its candidate features. Once draw 101 has already been scored, its known answer can become training evidence for draw 102 and later. The answer of the target currently being scored is never used to fit its own model.
 
-```text
-number_log_lift(c)
-  = mean over the six numbers of log(P(number | history) / (6/45))
+The frozen first model is a small NumPy-only pairwise ridge ranker with ten features:
 
-pair_log_lift(c)
-  = mean over the fifteen unordered pairs of log(P(pair | history) / (1/66))
+- full-history number Bayesian log-lift;
+- full-history pair Bayesian log-lift;
+- recent-20 number excess frequency;
+- recent-100 number excess frequency;
+- recent-100 pair excess frequency;
+- previous-draw overlap;
+- absolute sum deviation from 138;
+- odd-count imbalance from 3:3;
+- number range;
+- consecutive-pair count.
 
-ranking_evidence(c)
-  = number_reliability * number_log_lift(c)
-  + pair_reliability   * pair_log_lift(c)
-```
+Structural features have no hard-coded favorable sign. Because the learner compares historical winners against fair random valid combinations, it must learn any direction from prior solved targets.
 
-The displayed score is a monotone transform only:
-
-```text
-prediction_score = 50 + 50 * tanh(ranking_evidence)
-```
-
-Ranking uses the unrounded `ranking_evidence` value.
-
-### Brier reliability result on data through draw 1235
-
-The first local v2.7.1 verification produced:
+Frozen screen settings:
 
 ```text
-number Brier skill
-  overall   -0.0013900204
-  recent300 -0.0009973398
-  recent100 -0.0011491355
-  reliability 0
-
-pair Brier skill
-  overall   -0.0006724232
-  recent300 -0.0004667738
-  recent100 -0.0004752381
-  reliability 0
+history start index       = 100
+minimum solved targets    = 100
+training negatives/target = 64
+evaluation negatives      = 500
+ridge lambda              = 2.0
+bootstrap reps            = 2000
+bootstrap block size      = 20
 ```
 
-Therefore the current Brier-controlled recommendation score is neutral (`50`) for every combination. Any TOP-K shown while both reliabilities are zero is only deterministic tie handling and must not be interpreted as predictive ordering.
+See `docs/v28_reverse_ranking_spec.md` for the exact equations and leakage rules.
 
-This is not treated as the final verdict on ranking usefulness, because Brier score evaluates marginal probability calibration while the application target is combination ranking.
+## Current validation commands
 
-## Combination-ranking audit
-
-The next frozen validation directly tests the application target: whether the actual historical winning six-number combination ranks above fair random valid combinations using the raw Bayesian evidence.
-
-Tracks:
-
-```text
-number
-pair
-equal_family_fusion = 0.5 * number + 0.5 * pair
-```
-
-Each historical target uses only earlier draws. Pattern type is not used. Screening uses deterministic unique fair combinations from the full 6/45 universe and circular block-bootstrap uncertainty.
-
-Run:
-
-```powershell
-python scripts\run_v271_ranking_evidence_audit.py --baseline-samples 500 --bootstrap-reps 2000 --progress-every 50 --output-json data\cache\v271_ranking_screen.json
-```
-
-Interpretation:
-
-- a screening survivor earns a separate 2,000-fair-combination confirmation;
-- the screening result does not directly change production weights;
-- no survivor means the current full-history number/pair Bayesian posterior family remains neutral in the recommendation path;
-- no post-hoc horizon or prior tuning is allowed to rescue a failed screen.
-
-## Recommendation workflow
-
-Update `data/lotto.xlsx` with the newest completed draw, then run a sampled smoke before any exhaustive recommendation:
-
-```powershell
-python scripts\run_recommend.py --sampled --candidate-count 2000 --top-k 10 --output-json data\cache\v271_evidence_smoke.json
-```
-
-When an evidence configuration has been accepted for exhaustive research ranking:
-
-```powershell
-python scripts\run_recommend.py --top-k 10 --output-json data\cache\v271_recommendations.json
-```
-
-## Site integration
-
-`lotto_engine.v27_release.public_recommendation_payload()` remains the site-facing contract. It includes:
-
-- model version and research status;
-- latest reflected and target draw;
-- evaluation mode and candidate count;
-- evidence diagnostics including number/pair specifications, Brier skills, and reliabilities;
-- ranked numbers, score, raw ranking evidence, pattern metadata, and component breakdown.
-
-`streamlit_app.py` consumes the same recommendation module.
-
-## Validation policy
-
-Strict rolling-origin rules remain mandatory:
-
-```text
-target draw 101 -> history 1..100 only
-target draw 102 -> history 1..101 only
-...
-```
-
-Research signals may be computed, but they affect recommendation ranking only through an explicitly documented validation/reliability layer. A failed or neutral validation must never be silently replaced by legacy static weights.
-
-Run the full test suite after pulling changes:
+After pulling the branch, first run the regression suite:
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+Then run the frozen v2.8 screening audit:
+
+```powershell
+python scripts\run_v28_reverse_ranking.py --baseline-samples 500 --bootstrap-reps 2000 --progress-every 50 --output-json data\cache\v28_reverse_ranking_screen.json
+```
+
+Screening gate:
+
+- overall mean winning-combination percentile > 50;
+- block-bootstrap 95% CI for percentile-minus-50 has lower bound > 0;
+- recent-300 mean >= 50;
+- recent-100 mean >= 50.
+
+If and only if the frozen screen survives, rerun the exact same model with 2,000 fair evaluation combinations per outer target using the confirmation protocol. Do not tune lambda, remove features, change horizons, or select a recent slice from the screening result.
+
+## Historical result documents
+
+- `docs/v27_phase5_static_component_result.md` — legacy static component rejection;
+- `docs/v271_brier_reliability_result.md` — number/pair Brier reliability result;
+- `docs/v271_ranking_evidence_result.md` — direct combination-ranking rejection of number, pair, and frozen 50:50 fusion;
+- `docs/v28_reverse_ranking_spec.md` — current reverse-learning nested ranking specification.
+
+## Recommendation command
+
+`scripts/run_recommend.py` remains available for reproducibility/site-contract work, but while validated evidence reliability is zero its tied 50-point output is neutral and should not be presented as predictive TOP-K.
+
+The research audit and the production-facing recommendation command are intentionally separate until a frozen model passes both screening and independent confirmation.
