@@ -1,30 +1,23 @@
-# v2.7 Release Validation Result — Historical / Superseded
+# v2.7 Release Validation Result
 
-> **Current status:** this file preserves the successful execution record of the old
-> v2.7 static path at commit `d2399347...`. Its former release conclusion was
-> superseded after Phase 5A was actually executed and produced no static-component
-> screening survivor. The current recommendation research path is v2.7.1; see
-> `docs/v27_phase5_static_component_result.md` and
-> `docs/v271_evidence_integration_spec.md`.
+> Historical record only. This validation was completed before Phase 5A. The former
+> statement that the static production candidate had passed its final gate is
+> superseded by the later Phase 5A result and v2.7.1 evidence integration work.
+> Do not use the TOP-10 below as the current recommendation model.
 
-At the time of this run, the v2.7 static implementation completed its then-declared
-release validation successfully. The execution facts below remain reproducible
-historical facts; the statement that the static model passed the final statistical
-release gate is no longer current.
-
-## Validation identity
+## Historical validation identity
 
 - validated code commit: `d2399347b6ca7a18f9af8eed38029dbe48bce30f`
 - branch: `dev/v2.7-validation-rebuild`
 - data rows: `1235`
 - latest reflected draw: `1235`
 - target draw: `1236`
-- production selection at that commit: `pure_static_score_top_k`
+- historical production selection: `pure_static_score_top_k`
 - dynamic transition: disabled
 - dynamic momentum: disabled
 - hard filters: none
 
-## Full regression at the historical validation commit
+## Historical full regression
 
 Command:
 
@@ -40,7 +33,7 @@ Result:
 - runtime: `2.965s`
 - status: `OK`
 
-## Historical exhaustive end-to-end run
+## Historical exhaustive end-to-end
 
 Command:
 
@@ -70,20 +63,30 @@ Result:
 | 9 | 5 7 12 14 25 38 | 83.7781 | normal |
 | 10 | 5 7 12 14 27 40 | 83.7762 | normal |
 
-All ten being `normal` was not caused by a quota or hard filter. It was the result of
-the then-frozen global static score. Phase 5A later showed that the relevant legacy
-static components did not pass the predeclared same-type predictive-evidence gate, so
-this TOP-10 must not be interpreted as evidence that Normal combinations are more
-predictive.
+At the time, all final TOP-10 combinations being `normal` was an observed result of
+the frozen cross-type raw score, not a quota or hard filter.
 
-## Superseding decision
+## Why this result is superseded
 
-The old release conclusion is withdrawn for statistical-model purposes:
+Phase 5A later performed the strict same-pattern-type fair-baseline audit that had
+previously been deferred. It found no surviving static component and also showed the
+current branch-base benchmark itself had no validated same-type ranking advantage.
+See `docs/v27_phase5_static_component_result.md`.
 
-- Phase 5A is no longer deferred; it was completed and recorded.
-- No legacy static component advances to confirmation.
-- The frozen v2.7 static score no longer drives `scripts/run_recommend.py`.
-- Transition and momentum remain disabled; those earlier decisions are unchanged.
-- v2.7.1 connects number/pair Bayesian evidence to the recommendation path with
-  continuous OOS reliability shrinkage and one common scoring equation.
-- v2.7.1 remains a research candidate pending local-data smoke verification.
+The former production path also did not consume the Bayesian number/pair evidence
+modules. v2.7.1 therefore replaced the active research direction with a unified
+number/pair evidence path and explicit reliability control.
+
+The first v2.7.1 Brier reliability run through draw 1235 produced zero reliability
+for both fixed number and pair models. See `docs/v271_brier_reliability_result.md`.
+
+Because Brier probability calibration and six-number combination ranking are not the
+same target, the next frozen audit directly measures actual-winning-combination rank
+versus fair alternative combinations:
+
+```powershell
+python scripts\run_v271_ranking_evidence_audit.py --baseline-samples 500 --bootstrap-reps 2000 --progress-every 50 --output-json data\cache\v271_ranking_screen.json
+```
+
+Until that ranking audit and any required confirmation are reviewed, there is no
+accepted final production predictor in this branch.
