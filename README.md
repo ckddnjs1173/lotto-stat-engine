@@ -1,159 +1,141 @@
 # Lotto Stat Engine v2.7.1
 
-Lotto 6/45 statistical ranking research engine. `score` / `prediction_score` is an
-internal ranking score, **not** an actual winning probability.
+Lotto 6/45 statistical ranking research candidate. `score` / `prediction_score` is an internal ranking score, not an actual winning probability.
 
-## Current research-candidate policy
+## Current research status
 
-- Every valid 6/45 combination remains eligible: `C(45, 6) = 8,145,060`.
-- There are no hard number, pattern, aesthetic, or portfolio filters.
-- Normal / Mixed / Outlier is metadata only and does not select a scoring branch.
-- All candidates are ranked by one common number + pair Bayesian evidence equation.
-- Number and pair influence is recomputed from strict walk-forward Brier skill on the
-  same local `data/lotto.xlsx` used for the recommendation.
-- Transition and momentum remain disabled after the v2.7 validation gates.
-- The former v2.7 static structure components remain in the repository for audit and
-  reproducibility, but Phase 5A found no screening survivor and they no longer drive
-  the recommendation path.
+Phase 5A completed the previously deferred static-component audit. No legacy Normal/Outlier or Mixed static component survived the predeclared strict walk-forward same-type screen. The former v2.7 frozen static release path is therefore superseded.
 
-## Why v2.7.1 exists
+The v2.7.1 recommendation path now connects the newer Bayesian evidence modules to the actual recommendation entry point:
 
-The v2.7 research code and the v2.7 recommendation entry point had become separated.
-`number_evidence.py`, `pair_evidence.py`, and the Phase 5 validation path could produce
-OOS evidence, but `scripts/run_recommend.py` still ranked combinations with the frozen
-legacy static scorer. v2.7.1 adds the missing evidence -> recommendation bridge.
+- all `C(45, 6) = 8,145,060` valid combinations remain eligible;
+- no hard number, structure, aesthetic, subtype, or portfolio filters;
+- one common ranking equation for Normal/Mixed/Outlier candidates;
+- number posterior evidence is measured against the fair `6/45` marginal null;
+- pair posterior evidence is measured against the fair `1/66` pair null;
+- strict walk-forward validation controls how much each evidence family can affect ranking;
+- transition and momentum remain disabled after the v2.7 validation program;
+- pattern type is attached only after ranking as descriptive metadata.
 
-This does **not** claim that a predictive lottery edge has been proven. It ensures that
-whatever number/pair evidence the engine computes is reflected in ranking only in
-proportion to its own OOS reliability.
+See:
 
-## Unified evidence equation
+- `docs/v27_phase5_static_component_result.md`
+- `docs/v271_evidence_integration_spec.md`
+- `docs/v271_brier_reliability_result.md`
 
-### Number posterior
+## Current production-facing research equation
 
-For number `i`, the production research spec uses the full completed history with a
-fair 6/45 prior and prior strength 120:
+For candidate combination `c`:
 
 ```text
-p_i = (hits_i + 120 * (6/45)) / (draws + 120)
-number_log_lift_i = log(p_i / (6/45))
+number_log_lift(c)
+  = mean over the six numbers of log(P(number | history) / (6/45))
+
+pair_log_lift(c)
+  = mean over the fifteen unordered pairs of log(P(pair | history) / (1/66))
+
+ranking_evidence(c)
+  = number_reliability * number_log_lift(c)
+  + pair_reliability   * pair_log_lift(c)
 ```
 
-Candidate number evidence is the mean log-lift of its six numbers.
-
-### Pair posterior
-
-For unordered pair `(i,j)`, the fair-null inclusion probability is `1/66`. The fixed
-production research spec uses prior strength 330:
+The displayed score is a monotone transform only:
 
 ```text
-q_ij = (pair_hits_ij + 330 * (1/66)) / (draws + 330)
-pair_log_lift_ij = log(q_ij / (1/66))
+prediction_score = 50 + 50 * tanh(ranking_evidence)
 ```
 
-Candidate pair evidence is the mean log-lift of its 15 unordered pairs.
+Ranking uses the unrounded `ranking_evidence` value.
 
-### Reliability
+### Brier reliability result on data through draw 1235
 
-Before scoring the next draw, the same fixed number and pair specs are tested by
-strict rolling-origin / walk-forward validation against the fair uniform null.
-For each evidence class the engine reads Brier skill for:
-
-- all walk-forward targets;
-- recent 300 targets;
-- recent 100 targets.
-
-The continuous reliability is:
+The first local v2.7.1 verification produced:
 
 ```text
-positive_mean = mean(max(skill_window, 0))
-positive_fraction = fraction of {overall, recent300, recent100} with skill > 0
-reliability = positive_mean * positive_fraction
+number Brier skill
+  overall   -0.0013900204
+  recent300 -0.0009973398
+  recent100 -0.0011491355
+  reliability 0
+
+pair Brier skill
+  overall   -0.0006724232
+  recent300 -0.0004667738
+  recent100 -0.0004752381
+  reliability 0
 ```
 
-Negative skill is never inverted into a predictive signal. A weak or unstable model
-therefore contributes little or nothing rather than being treated as a full-strength
-predictor.
+Therefore the current Brier-controlled recommendation score is neutral (`50`) for every combination. Any TOP-K shown while both reliabilities are zero is only deterministic tie handling and must not be interpreted as predictive ordering.
 
-### Candidate ranking
+This is not treated as the final verdict on ranking usefulness, because Brier score evaluates marginal probability calibration while the application target is combination ranking.
+
+## Combination-ranking audit
+
+The next frozen validation directly tests the application target: whether the actual historical winning six-number combination ranks above fair random valid combinations using the raw Bayesian evidence.
+
+Tracks:
 
 ```text
-E(c)
-  = number_reliability * mean_number_log_lift(c)
-  + pair_reliability   * mean_pair_log_lift(c)
+number
+pair
+equal_family_fusion = 0.5 * number + 0.5 * pair
 ```
 
-`E(c)` is the exact ranking key. The displayed score is only a monotone bounded view:
+Each historical target uses only earlier draws. Pattern type is not used. Screening uses deterministic unique fair combinations from the full 6/45 universe and circular block-bootstrap uncertainty.
 
-```text
-prediction_score = 50 + 50 * tanh(E(c))
-```
-
-If evidence is weak, scores remain close to 50. Pattern type, odd/even balance, sum,
-sections, and other aesthetic structure do not modify this ranking.
-
-Exact evidence ties use a deterministic seed-based structure-neutral hash tie-break;
-this prevents lexicographic number order from becoming an accidental preference.
-
-## Workflow
-
-1. Update `data/lotto.xlsx` with the newest completed draw.
-2. Run the recommendation command.
-3. The engine detects the latest draw automatically.
-4. It reruns number/pair walk-forward reliability on the current data.
-5. It fits the next-draw Bayesian posteriors using all completed draws.
-6. It evaluates all 8,145,060 valid combinations by default with one common equation.
-7. It returns TOP-10 for `latest_draw + 1`.
+Run:
 
 ```powershell
-python scripts\run_recommend.py
+python scripts\run_v271_ranking_evidence_audit.py --baseline-samples 500 --bootstrap-reps 2000 --progress-every 50 --output-json data\cache\v271_ranking_screen.json
 ```
 
-Site/API JSON:
+Interpretation:
 
-```powershell
-python scripts\run_recommend.py --output-json data\cache\v271_recommendations.json
-```
+- a screening survivor earns a separate 2,000-fair-combination confirmation;
+- the screening result does not directly change production weights;
+- no survivor means the current full-history number/pair Bayesian posterior family remains neutral in the recommendation path;
+- no post-hoc horizon or prior tuning is allowed to rescue a failed screen.
 
-Development smoke:
+## Recommendation workflow
+
+Update `data/lotto.xlsx` with the newest completed draw, then run a sampled smoke before any exhaustive recommendation:
 
 ```powershell
 python scripts\run_recommend.py --sampled --candidate-count 2000 --top-k 10 --output-json data\cache\v271_evidence_smoke.json
 ```
 
-## Output diagnostics
-
-The public payload includes:
-
-- model/research status and reflected/target draws;
-- number and pair model specifications;
-- number and pair Brier skill for overall/recent300/recent100;
-- derived number and pair reliability;
-- each candidate's raw number/pair log-lift and weighted contributions;
-- pattern type as metadata only.
-
-## Validation history
-
-- Phase 2: type-wise calibration rejected; equalizing score scales did not improve OOS
-  ranking.
-- Phase 3A: no confirmed serial dependence, recent shift, change point, or first-order
-  pattern transition.
-- Phase 4: transition rejected; momentum showed weak long-run displacement but failed
-  the predeclared recent-100 confirmation gate.
-- Phase 5A: no legacy static component passed the same-type walk-forward screening
-  gate. See `docs/v27_phase5_static_component_result.md`.
-
-The correct interpretation remains conservative: this engine can rank statistical
-evidence, but current validation does not establish an increase in the mathematical
-jackpot probability of an individual Lotto 6/45 combination.
-
-## Verification after pulling changes
+When an evidence configuration has been accepted for exhaustive research ranking:
 
 ```powershell
-git pull --ff-only
+python scripts\run_recommend.py --top-k 10 --output-json data\cache\v271_recommendations.json
+```
+
+## Site integration
+
+`lotto_engine.v27_release.public_recommendation_payload()` remains the site-facing contract. It includes:
+
+- model version and research status;
+- latest reflected and target draw;
+- evaluation mode and candidate count;
+- evidence diagnostics including number/pair specifications, Brier skills, and reliabilities;
+- ranked numbers, score, raw ranking evidence, pattern metadata, and component breakdown.
+
+`streamlit_app.py` consumes the same recommendation module.
+
+## Validation policy
+
+Strict rolling-origin rules remain mandatory:
+
+```text
+target draw 101 -> history 1..100 only
+target draw 102 -> history 1..101 only
+...
+```
+
+Research signals may be computed, but they affect recommendation ranking only through an explicitly documented validation/reliability layer. A failed or neutral validation must never be silently replaced by legacy static weights.
+
+Run the full test suite after pulling changes:
+
+```powershell
 python -m unittest discover -s tests -v
-python scripts\run_recommend.py --sampled --candidate-count 2000 --top-k 10 --output-json data\cache\v271_evidence_smoke.json
 ```
-
-Inspect the printed number/pair Brier skills and reliabilities before running the full
-8,145,060-combination evaluation.
