@@ -4,6 +4,7 @@ import numpy as np
 
 from lotto_engine.v31_final_directional_recommendation import (
     FEATURE_NAMES,
+    _select_portfolio_entries,
     directional_raw_features,
     fair_null_transform,
     fit_additive_pairwise_ridge,
@@ -62,6 +63,20 @@ class V31FinalDirectionalRecommendationTests(unittest.TestCase):
         weights = np.linspace(0.1, 1.1, width)
         expected = float(np.dot(weights, vector))
         self.assertAlmostEqual(expected, float(np.sum(weights * vector)))
+
+    def test_portfolio_keeps_score_order_but_rejects_three_number_overlap(self):
+        ranked = [
+            (10.0, 1, (1, 2, 3, 4, 5, 6)),
+            (9.0, 2, (1, 2, 3, 7, 8, 9)),  # shares 3 with first => reject
+            (8.0, 3, (1, 2, 7, 8, 9, 10)),  # shares 2 with first => accept
+            (7.0, 4, (3, 4, 11, 12, 13, 14)),  # shares 2 with first => accept
+        ]
+        selected, relaxed = _select_portfolio_entries(ranked, 3, max_shared_numbers=2)
+        self.assertFalse(relaxed)
+        self.assertEqual([entry[0] for entry in selected], [10.0, 8.0, 7.0])
+        for left_index, left in enumerate(selected):
+            for right in selected[left_index + 1:]:
+                self.assertLessEqual(len(set(left[2]) & set(right[2])), 2)
 
 
 if __name__ == "__main__":
