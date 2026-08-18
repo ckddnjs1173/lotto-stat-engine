@@ -31,7 +31,10 @@ MODEL_VERSION = "v31_directional_fair_null_additive_reverse_ridge_v1"
 REFERENCE_SAMPLES_PER_TARGET = 1024
 REFERENCE_SEED_OFFSET = 31_301
 SELECTION_STRATEGY = "v31_directional_model_score_top_k"
+PORTFOLIO_STRATEGY = "highest_raw_score_subject_to_pairwise_shared_numbers_le_2"
 AUDIT_POOL_SIZE = 1000
+PORTFOLIO_MAX_SHARED_NUMBERS = 2
+FAIR_RANDOM_OVERLAP_GE3_RATE = 0.023834078570323606
 
 FEATURE_NAMES = (
     "number_full_log_lift",
@@ -265,6 +268,54 @@ def _bias_audit(entries: list[tuple[float, int, tuple[int, ...]]]) -> dict:
     }
 
 
+def _select_portfolio_entries(
+    ranked: list[tuple[float, int, tuple[int, ...]]],
+    top_k: int,
+    max_shared_numbers: int = PORTFOLIO_MAX_SHARED_NUMBERS,
+) -> tuple[list[tuple[float, int, tuple[int, ...]]], bool]:
+    """Keep model score order while rejecting unusually redundant tickets.
+
+    Two independent fair 6/45 tickets share at least three numbers only about 2.38%
+    of the time. The portfolio layer therefore accepts candidates in descending raw
+    model-score order only when they share at most two numbers with every already
+    selected ticket. This never changes model_score and never uses pattern aesthetics.
+    """
+    top_k = int(top_k)
+    max_shared_numbers = int(max_shared_numbers)
+    selected: list[tuple[float, int, tuple[int, ...]]] = []
+    selected_sets: list[set[int]] = []
+    for entry in ranked:
+        combo_set = set(entry[2])
+        if all(len(combo_set & prior) <= max_shared_numbers for prior in selected_sets):
+            selected.append(entry)
+            selected_sets.append(combo_set)
+            if len(selected) >= top_k:
+                return selected, False
+
+    # Safety fallback only if the retained ranking pool cannot satisfy the overlap
+    # rule. Fill by raw score rather than silently returning fewer tickets.
+    chosen = {entry[2] for entry in selected}
+    for entry in ranked:
+        if entry[2] in chosen:
+            continue
+        selected.append(entry)
+        chosen.add(entry[2])
+        if len(selected) >= top_k:
+            break
+    return selected, True
+
+
+def _attach_structure(item: dict, latest_pattern_type: str) -> None:
+    record = structure_record(item["numbers"], latest_pattern_type)
+    item["pattern_type"] = str(record["pattern_type"])
+    item["structure_metadata"] = {
+        "sum": int(record["sum"]),
+        "odd_count": int(record["odd_count"]),
+        "number_range": int(record["number_range"]),
+        "section_distribution": list(record["section_distribution"]),
+    }
+
+
 def generate_recommendations(
     exhaustive: bool = True,
     candidate_count: int = DEFAULT_CANDIDATE_COUNT,
@@ -291,18 +342,23 @@ def generate_recommendations(
             heapq.heapreplace(heap, entry)
         if progress_every and evaluated % int(progress_every) == 0:
             print(f"v3.1 final ranking progress: {evaluated:,} candidates evaluated")
+
     ranked = sorted(heap, key=lambda item: (item[0], item[1]), reverse=True)
+    latest_pattern_type = str(profile["latest_pattern_type"])
+    raw_rank_lookup = {entry[2]: rank for rank, entry in enumerate(ranked, 1)}
+
     selected = [explain_candidate(entry[2], fitted) for entry in ranked[: int(top_k)]]
     for rank, item in enumerate(selected, 1):
         item["rank"] = rank
-        record = structure_record(item["numbers"], str(profile["latest_pattern_type"]))
-        item["pattern_type"] = str(record["pattern_type"])
-        item["structure_metadata"] = {
-            "sum": int(record["sum"]),
-            "odd_count": int(record["odd_count"]),
-            "number_range": int(record["number_range"]),
-            "section_distribution": list(record["section_distribution"]),
-        }
+        _attach_structure(item, latest_pattern_type)
+
+    portfolio_entries, portfolio_relaxed = _select_portfolio_entries(ranked, int(top_k))
+    portfolio = [explain_candidate(entry[2], fitted) for entry in portfolio_entries]
+    for rank, item in enumerate(portfolio, 1):
+        item["portfolio_rank"] = rank
+        item["raw_rank_within_retained_pool"] = int(raw_rank_lookup[tuple(item["numbers"])])
+        _attach_structure(item, latest_pattern_type)
+
     return {
         "meta": {
             "model_version": MODEL_VERSION,
@@ -316,6 +372,14 @@ def generate_recommendations(
             "feature_policy": "direction preserved; fair-null bounded; additive only; no quadratic interactions",
             "candidate_policy": "all valid 6-of-45 combinations; no hard filters or pattern quotas",
             "pattern_type_role": "metadata_only_not_used_in_ranking",
+            "portfolio": {
+                "strategy": PORTFOLIO_STRATEGY,
+                "source_pool_size": int(len(ranked)),
+                "max_shared_numbers": PORTFOLIO_MAX_SHARED_NUMBERS,
+                "fair_random_pair_overlap_ge_3_rate": FAIR_RANDOM_OVERLAP_GE3_RATE,
+                "ranking_score_modified": False,
+                "fallback_relaxed": bool(portfolio_relaxed),
+            },
             "training": {
                 "history_draws": int(fitted["history_draws"]),
                 "solved_targets": int(fitted["model"]["solved_targets"]),
@@ -326,7 +390,9 @@ def generate_recommendations(
             },
         },
         "bias_audit_top_pool": _bias_audit(ranked),
+        "portfolio_bias_audit": _bias_audit(portfolio_entries),
         "recommendations": selected,
+        "portfolio_recommendations": portfolio,
     }
 
 
