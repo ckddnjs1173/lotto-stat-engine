@@ -1,95 +1,48 @@
-# v2.7 / v2.7.1 Research Candidate Status
+# v2.7 / v2.7.1 Release-Candidate Status
 
-Status: draft research candidate; former v2.7 static release freeze superseded.
+Status: historical release candidate superseded; current branch is research-only.
 
-## Why the former release freeze was withdrawn
+## Why release promotion is blocked
 
-Phase 5A completed the previously deferred strict walk-forward static-component audit. No tested legacy Normal/Outlier or Mixed static component survived the predeclared same-pattern-type fair-baseline screen.
+The original v2.7 static release freeze was invalidated by the completed Phase 5A audit: none of the legacy static Normal/Outlier or Mixed components survived the predeclared strict walk-forward screen.
 
-The former v2.7 recommendation entry point also did not consume the newer Bayesian number/pair evidence modules. Research calculations and recommendation ranking had become disconnected.
+The subsequent v2.7.1 attempt connected Bayesian number/pair evidence to the recommendation path, but both validation layers were also negative:
 
-Therefore the old `pure_static_score_top_k` release decision is no longer the active research direction.
+- Brier reliability versus the fair marginal null was non-positive in all overall/recent windows for both number and pair models, producing zero production-facing reliability;
+- direct actual-winning-combination rank versus fair random valid combinations produced no screening survivor for number, pair, or the frozen 50:50 fusion.
 
-## v2.7.1 unified evidence path
+Therefore the current recommendation output remains neutral when reliability is zero. No v2.7 or v2.7.1 score should be promoted as a validated predictive release.
 
-The current draft research path:
+## Preserved decisions
 
-- keeps all 8,145,060 valid combinations eligible;
-- applies no hard structural/aesthetic filters;
-- uses one common number/pair Bayesian evidence formula for all candidate types;
-- treats Normal/Mixed/Outlier only as descriptive metadata after ranking;
-- keeps transition and momentum disabled;
-- does not fall back to failed legacy static weights when evidence is neutral.
+- all `8,145,060` valid combinations remain eligible;
+- no hard structural/aesthetic filter;
+- no pattern-type ranking branch;
+- transition remains disabled;
+- momentum remains disabled;
+- failed static/Bayesian components are not rescued by post-hoc weight tuning;
+- pattern metadata is descriptive only.
 
-## Brier reliability result through draw 1235
+## Current research direction: v2.8
 
-Local verification at head `6abdd4c` passed 78 tests and produced:
+The next model class implements nested reverse learning.
 
-```text
-number Brier skill
-  overall   -0.0013900204
-  recent300 -0.0009973398
-  recent100 -0.0011491355
-  reliability 0
+For each historical target, candidate features are constructed from older draws only. Once that target has already been scored, the known winning answer may be used as one solved ranking problem for later targets. The current target answer is never allowed to fit its own coefficients.
 
-pair Brier skill
-  overall   -0.0006724232
-  recent300 -0.0004667738
-  recent100 -0.0004752381
-  reliability 0
-```
-
-The Brier-controlled v2.7.1 recommendation score is therefore currently neutral. A TOP-K emitted while both reliabilities are zero is only deterministic tie handling and is not a predictive recommendation.
-
-## Next validation: direct combination ranking
-
-Brier score is a proper probability-calibration metric, but the application target is ranking the actual six-number winning combination above alternative valid combinations. A target-aligned strict walk-forward ranking audit is therefore required before making a final decision on the fixed number/pair posterior family.
-
-Frozen tracks:
-
-```text
-number
-pair
-equal_family_fusion = 0.5 * number + 0.5 * pair
-```
-
-Screening:
-
-```text
-start index: 100
-fair baseline combinations per target: 500
-block bootstrap reps: 2000
-block size: 20
-```
-
-Gate:
-
-```text
-overall mean percentile > 50
-95% block-bootstrap CI for percentile - 50 entirely > 0
-recent300 >= 50
-recent100 >= 50
-```
-
-A survivor earns only a separate 2,000-combination-per-target confirmation. No screening result changes production reliability automatically.
-
-## Required local sequence
+The frozen v2.8 screen is documented in `docs/v28_reverse_ranking_spec.md` and executed by:
 
 ```powershell
-git pull --ff-only
-python -m unittest discover -s tests -v
-python scripts\run_v271_ranking_evidence_audit.py --baseline-samples 500 --bootstrap-reps 2000 --progress-every 50 --output-json data\cache\v271_ranking_screen.json
+python scripts\run_v28_reverse_ranking.py --baseline-samples 500 --bootstrap-reps 2000 --progress-every 50 --output-json data\cache\v28_reverse_ranking_screen.json
 ```
 
-Do not run the full 8,145,060-combination recommendation while both current production-facing reliabilities are zero.
+The production recommendation path is not modified by the v2.8 research module. Promotion requires the predeclared screen and a separate 2,000-fair-candidate confirmation with the exact same features, ridge lambda, horizons, and target-isolation rules.
 
-## Anti-overfitting constraints
+## Historical evidence records
 
-- no post-hoc prior-strength retuning to rescue the ranking screen;
-- no post-hoc half-life search to rescue the ranking screen;
-- no type-specific ranking branch;
-- no structural fallback score;
-- no transition/momentum reopening;
-- no confirmation skip for a screening survivor.
+- `docs/v27_release_validation_result.md` — historical v2.7 static release run, explicitly superseded;
+- `docs/v27_phase5_static_component_result.md` — Phase 5A rejection;
+- `docs/v271_brier_reliability_result.md` — zero Brier reliability result;
+- `docs/v271_ranking_evidence_result.md` — direct combination-ranking rejection;
+- `docs/v28_reverse_ranking_spec.md` — current research specification.
 
-The exact equations are documented in `docs/v271_evidence_integration_spec.md`. The Brier result is recorded in `docs/v271_brier_reliability_result.md`, and Phase 5A is recorded in `docs/v27_phase5_static_component_result.md`.
+PR #1 should remain draft until a genuinely validated ranking model exists.
