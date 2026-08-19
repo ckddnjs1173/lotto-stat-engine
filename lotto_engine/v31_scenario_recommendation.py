@@ -171,7 +171,6 @@ def _tie_diagnostics(
         "tie_policy": FULL11_BASELINE_SPEC.tie_policy,
         "raw_top_k_cutoff_score": cutoff_score,
         "equal_cutoff_score_count_within_retained_pool": int(equal_in_retained),
-        "equal_cutoff_count_is_lower_bound": bool(equal_in_retained == len(ranked)),
         "exact_score_duplicate_count_inside_raw_top_k": int(
             len(top_scores) - len(set(top_scores))
         ),
@@ -253,7 +252,7 @@ def generate_scenario_recommendations(
             "scenario": str(scenario).lower(),
             "model_version": spec.name,
             "model_status": spec.status,
-            "promotion_state": "no_v31_scenario_is_currently_promoted",
+            "promotion_state": "historical_experimental_scenario_not_current_frozen_model",
             "model_spec": spec_metadata(spec),
             "latest_draw": int(fitted["latest_round"]),
             "target_draw": int(fitted["target_round"]),
