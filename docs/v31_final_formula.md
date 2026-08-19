@@ -1,30 +1,28 @@
-# v3.1 CLEAN3 personal prediction formula
+# v3.1 formula audit state
 
-This document describes the **current** personal-use calculation path.
+This file used to describe CLEAN3 as the current personal prediction formula. That promotion is withdrawn.
 
-## Purpose
+No v3.1 feature subset is currently promoted. FULL11 is the historical baseline and CLEAN3 is an experimental joint-ablation candidate that still requires joint historical and numerical-stability audits.
 
-The engine preserves the raw value calculated by the model even when historical validation does not establish predictive edge. Validation is diagnostic metadata, not a multiplier that neutralizes the model score.
+## Shared v3.1 model family
 
-All `C(45,6) = 8,145,060` valid combinations remain eligible. There are no pattern quotas or aesthetic hard filters.
+All `C(45,6) = 8,145,060` valid combinations remain eligible. There are no aesthetic hard filters, type quotas, or validation-confidence multipliers.
 
-## Historical training sequence
+The historical training chronology remains:
 
-Starting after the first 100 completed draws, each solved target is processed as follows:
+1. build state using only draws before target `t`;
+2. build target `t` feature context;
+3. build the pre-target fair-null reference;
+4. transform the target and fair negatives;
+5. score outer target using only prior solved targets when performing walk-forward validation;
+6. after target `t` is solved, add its actual-vs-fair differences to training sufficient statistics;
+7. advance history to `t+1`.
 
-1. build state using only earlier draws;
-2. calculate the candidate raw features for the target;
-3. sample 1,024 deterministic fair 6/45 reference combinations using only the pre-target context;
-4. map each raw feature to a tie-safe fair-null coordinate in `[-1,1]`;
-5. sample 64 fair negative combinations for that solved target;
-6. accumulate pairwise actual-minus-negative sufficient statistics;
-7. only then advance history with the solved target.
+This blocks within-target leakage. It does not make the full model-development history independent OOS evidence because model classes and feature subsets were selected after inspecting the same historical period.
 
-The latest model is fit after all completed draws are processed. The target draw is always `latest + 1`.
+## Raw feature representation
 
-## Raw representation
-
-The stable raw representation contains 11 columns so previous v3.1 audit results remain reproducible:
+The reproducible v3.1 raw representation contains 11 columns:
 
 - `number_full_log_lift`
 - `pair_full_log_lift`
@@ -38,103 +36,105 @@ The stable raw representation contains 11 columns so previous v3.1 audit results
 - `number_range`
 - `consecutive_pairs`
 
-## Production CLEAN3 subset
-
-The current production fit excludes:
-
-- `previous_draw_overlap`
-- `number_range`
-- `consecutive_pairs`
-
-The remaining eight columns are fit jointly by the same pairwise-ridge objective. Disabled columns receive zero weight only **after** the reduced ridge system has been solved; the active weights are therefore re-estimated in the reduced model, not copied from the old 11-feature model.
-
-Active set:
-
-```text
-A = {
-  number_full_log_lift,
-  pair_full_log_lift,
-  number_recent20_excess,
-  number_recent100_excess,
-  pair_recent100_excess,
-  sum_signed_center_138,
-  high_minus_low_zone_count,
-  odd_count_signed_center_3
-}
-```
-
-## Fair-null transform
-
-For raw feature `x_j` and its pre-target fair reference column:
+The historical baseline fair-null transform is:
 
 ```text
 z_j = 2 * F_mid,j(x_j) - 1
 ```
 
-where exact ties receive half credit. Every transformed coordinate is bounded to `[-1, 1]`.
+where `F_mid,j` is estimated from 1,024 deterministic fair combinations for that target/context.
 
-## Score
+The additive score is:
 
 ```text
 score(c) = w_A^T z_A(c)
 ```
 
-`w_A` is learned by pairwise ridge from solved historical winners versus fair negative combinations.
+`A` is the active feature set for the explicitly selected scenario.
 
-There are no square terms, feature interactions, Normal/Mixed/Outlier branch, validation-confidence multiplier, or type/section quota.
+## Explicit scenarios
 
-The signed sum/zone/odd features do not encode “closest to the center is best.” Their direction and magnitude are learned from historical actual-vs-fair comparisons.
-
-## Why CLEAN3
-
-The component audit on data through draw 1237 found the legacy full-11 TOP-1000 had:
+### FULL11
 
 ```text
-mean previous-draw overlap = 2.007
-any previous overlap       = 1.000
-mean consecutive pairs     = 0.000
-mean number range          = 21.904
+status = experimental_baseline_not_promoted
+active = all 11 features
 ```
 
-Fair 6/45 references are approximately:
+This scenario exists to reproduce the v3.1 baseline used by component audits.
+
+### CLEAN3
 
 ```text
-expected previous overlap  = 0.800
-any previous overlap       = 0.5994
-expected consecutive pairs = 0.6667
-expected number range      = 32.8571
+status = experimental_candidate_requires_joint_and_stability_audit
+removed =
+  previous_draw_overlap
+  number_range
+  consecutive_pairs
 ```
 
-The three corresponding features produced large current-pool structural displacement while their individual historical leave-one-out value was inconclusive/near-neutral. They are therefore excluded from the personal calculation.
+CLEAN3 solves the reduced ridge system on the remaining eight features. It is not a cosmetic zeroing of final contributions.
 
-`number_full_log_lift` is retained because its leave-one-out historical delta was the strongest of the four audited terms and was positive overall, recent-300, and recent-100, even though its bootstrap interval still included zero.
+The earlier provisional CLEAN3 promotion was withdrawn because all focused single-feature bootstrap intervals included zero and the three-feature joint model had not yet been validated before promotion.
 
-See `docs/v31_component_influence_result.md`.
+## Distribution diagnostics are not model-selection gates
 
-## Pattern metadata
+The old full-11 TOP-1000 showed strong displacement from fair expectations in previous-draw overlap, consecutive pairs, and range. Those results show strong model influence but do **not** by themselves prove that a feature is wrong.
 
-`structure_record()` is used after ranking to label candidates as Normal/Mixed/Outlier and expose structural diagnostics. Pattern type does **not** enter current ranking or portfolio allocation.
+A predictive top tail is allowed to look unlike a random draw. Therefore distance from the fair-null mean is descriptive only. Feature removal must be supported by target-isolated historical winner-ranking evidence and stability analysis, not aesthetics.
 
-## Portfolio layer
+## Current numerical audit concerns
 
-Portfolio construction is downstream of the score. It does not change `score(c)`.
+### 1. 1,024-reference resolution
 
-For requested TOP-10:
+The 1,024-sample empirical CDF can saturate at `-1/+1` beyond sampled support. Because the final universe contains 8,145,060 combinations, top-tail plateaus can be much larger than the reference itself. Reference seed/size stability must therefore be measured before interpreting small TOP score differences as stable ordering.
 
-- pairwise shared numbers <= 2;
-- each number may appear on at most 4 tickets;
-- no fallback relaxation.
+### 2. Tie policy
 
-The engine scans the retained top-50,000 raw candidates in descending model-score order and takes the first candidates satisfying those coverage constraints.
+The old ranking used a seed-dependent BLAKE2 hash to break exact score ties. The shared v3.1 core now uses a fixed RNG-free combination order. Exhaustive ranking therefore does not change tie order when `seed_offset` changes.
+
+### 3. Exact structural nulls
+
+Six structural features have exact whole-universe distributions and do not mathematically require Monte Carlo reference sampling:
+
+- previous-draw overlap: hypergeometric
+- odd count: exact combinatorics
+- high-minus-low zone count: exact multinomial-combination sum
+- range: `(45-r) * C(r-1,4)`
+- consecutive adjacent pairs: exact run combinatorics
+- sum: exact dynamic programming over 6-of-45 subsets
+
+These distributions are implemented in `lotto_engine/v31_exact_structural_null.py`. They are intentionally not wired into FULL11/CLEAN3 yet; they define a separately audited representation change.
 
 ## Reproducibility
 
-Every result includes latest reflected draw, target draw, evaluated count, active/disabled feature names, training settings, and normalized data SHA-256 fingerprint.
+`lotto_engine/v31_model_spec.py` contains frozen dataclass specifications for the two v3.1 scenarios. Each run records a canonical SHA-256 model-spec hash plus the normalized draw-history SHA-256.
 
-## Current command
+The model spec fixes:
+
+- feature set
+- history start index
+- number/pair priors
+- recent windows
+- training negatives
+- fair-reference count
+- ridge lambda
+- seed offsets
+- tie policy
+
+## Current commands
+
+Scenario selection is mandatory:
 
 ```powershell
-python scripts\run_recommend.py --top-k 10 --progress-every 1000000 --output-json data\cache\v31_final_personal.json
+python scripts\run_recommend.py --scenario full11
+python scripts\run_recommend.py --scenario clean3
 ```
 
-`python main.py` delegates to the same current runner.
+For wiring checks:
+
+```powershell
+python scripts\run_recommend.py --scenario full11 --sampled --candidate-count 20000
+```
+
+Do not describe either scenario as the final model until reference stability, full feature/group ablation, and coefficient stability audits are complete.
