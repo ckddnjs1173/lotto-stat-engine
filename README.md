@@ -156,9 +156,9 @@ python scripts\run_v31_reference_stability_audit.py --scenario full11 --candidat
 reference 정책을 역사 전체에서 바꾸고 **처음부터 다시 학습**한 뒤 weight/ranking 안정성을 비교합니다.
 
 ```powershell
-python scripts\run_v31_retrained_reference_audit.py \
-  --reference-counts 1024 4096 \
-  --stream-deltas 0 1 \
+python scripts\run_v31_retrained_reference_audit.py `
+  --reference-counts 1024 4096 `
+  --stream-deltas 0 1 `
   --latest-candidate-count 20000
 ```
 
@@ -176,8 +176,8 @@ python scripts\run_v31_retrained_reference_audit.py \
 모든 단일 feature와 사전 정의한 상관 group을 strict walk-forward로 leave-out합니다.
 
 ```powershell
-python scripts\run_v31_full_feature_audit.py \
-  --baseline-samples 500 \
+python scripts\run_v31_full_feature_audit.py `
+  --baseline-samples 500 `
   --bootstrap-reps 2000
 ```
 
@@ -213,9 +213,9 @@ pair_edge(i,j) = a_i + a_j + residual_ij
 원본 pair feature와 residual pair feature를 같은 target/reference/negative candidate stream으로 각각 재학습해 비교합니다.
 
 ```powershell
-python scripts\run_v31_pair_residual_audit.py \
-  --baseline-samples 500 \
-  --bootstrap-reps 2000 \
+python scripts\run_v31_pair_residual_audit.py `
+  --baseline-samples 500 `
+  --bootstrap-reps 2000 `
   --latest-candidate-count 20000
 ```
 
@@ -235,9 +235,9 @@ python scripts\run_v31_pair_residual_audit.py \
 정확한 조합수 구현은 `lotto_engine/v31_exact_structural_null.py`에 있습니다. baseline 계산에는 아직 자동 적용하지 않고, sampled structural CDF와 exact structural CDF를 각각 재학습하여 비교합니다.
 
 ```powershell
-python scripts\run_v31_exact_null_audit.py \
-  --baseline-samples 500 \
-  --bootstrap-reps 2000 \
+python scripts\run_v31_exact_null_audit.py `
+  --baseline-samples 500 `
+  --bootstrap-reps 2000 `
   --latest-candidate-count 20000
 ```
 
@@ -269,9 +269,9 @@ python scripts\run_v31_dependency_audit.py
 결정용 전체 감사:
 
 ```powershell
-python scripts\run_v31_audit_suite.py \
-  --mode full \
-  --progress-every 50 \
+python scripts\run_v31_audit_suite.py `
+  --mode full `
+  --progress-every 50 `
   --output-json data\cache\v31_complete_audit_suite.json
 ```
 
@@ -289,7 +289,7 @@ python scripts\run_v31_audit_suite.py --mode quick
 4. CLEAN3/CLEAN4 joint audit
 5. full 11-feature/group audit
 6. pair residualization
-7. exact structural null comparison
+7. exact structural-null comparison
 8. ridge/feature dependency audit
 
 **suite는 어떤 scenario도 자동 승격하지 않습니다.**
