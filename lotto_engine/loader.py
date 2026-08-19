@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .config import LOTTO_XLSX_PATH, NUMBER_COLUMNS, ROUND_COLUMN
@@ -10,6 +11,25 @@ from .config import LOTTO_XLSX_PATH, NUMBER_COLUMNS, ROUND_COLUMN
 
 class LottoDataError(Exception):
     pass
+
+
+def _strict_integer_series(series: pd.Series, label: str) -> pd.Series:
+    """Parse a spreadsheet column without silently truncating fractional values."""
+    try:
+        numeric = pd.to_numeric(series, errors="raise")
+    except (TypeError, ValueError) as exc:
+        raise LottoDataError(f"{label} 컬럼에 숫자가 아닌 값이 있습니다: {exc}") from exc
+
+    values = numeric.to_numpy(dtype=float)
+    if not np.all(np.isfinite(values)):
+        raise LottoDataError(f"{label} 컬럼에 유한한 숫자가 아닌 값이 있습니다.")
+
+    fractional_mask = values != np.floor(values)
+    if np.any(fractional_mask):
+        bad = numeric.iloc[np.flatnonzero(fractional_mask)[:10]].tolist()
+        raise LottoDataError(f"{label} 컬럼에는 정수만 허용됩니다: {bad}")
+
+    return numeric.astype(int)
 
 
 def load_lotto_data(path: Path = LOTTO_XLSX_PATH) -> pd.DataFrame:
@@ -30,12 +50,9 @@ def load_lotto_data(path: Path = LOTTO_XLSX_PATH) -> pd.DataFrame:
         raise LottoDataError(f"필수 컬럼이 없습니다: {', '.join(missing)}")
 
     df = df.copy()
-    try:
-        df[ROUND_COLUMN] = pd.to_numeric(df[ROUND_COLUMN], errors="raise").astype(int)
-        for col in NUMBER_COLUMNS:
-            df[col] = pd.to_numeric(df[col], errors="raise").astype(int)
-    except (TypeError, ValueError) as exc:
-        raise LottoDataError(f"회차/당첨번호 컬럼에 숫자가 아닌 값이 있습니다: {exc}") from exc
+    df[ROUND_COLUMN] = _strict_integer_series(df[ROUND_COLUMN], ROUND_COLUMN)
+    for col in NUMBER_COLUMNS:
+        df[col] = _strict_integer_series(df[col], col)
 
     df = df.sort_values(ROUND_COLUMN).reset_index(drop=True)
     validate_lotto_data(df)
