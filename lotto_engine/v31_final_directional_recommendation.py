@@ -1,214 +1,70 @@
 from __future__ import annotations
 
-import hashlib
 import heapq
 import json
-import random
-from itertools import combinations
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
 
-from .candidates import generate_candidates, iter_all_combinations, make_seed, random_combination
-from .config import BACKTEST_START_INDEX, DEFAULT_CANDIDATE_COUNT, ROUND_COLUMN, TOP_K_RECOMMENDATIONS
+from .candidates import (
+    TOTAL_COMBINATION_COUNT,
+    generate_candidates,
+    iter_all_combinations,
+    make_seed,
+)
+from .config import BACKTEST_START_INDEX, DEFAULT_CANDIDATE_COUNT, TOP_K_RECOMMENDATIONS
 from .loader import load_lotto_data, row_numbers
 from .mixed_scoring import structure_record
-from .profiles import build_profile
-from .number_evidence import UNIFORM_NUMBER_PROBABILITY
-from .pair_evidence import PAIR_TO_INDEX, UNIFORM_PAIR_PROBABILITY
-from .v28_reverse_ranking import (
-    TRAIN_NEGATIVES_PER_TARGET,
-    RIDGE_LAMBDA,
-    _advance_history,
-    _empty_history_state,
-    _feature_context,
-    _sample_fair_candidates,
+from .v31_core import (
+    FEATURE_NAMES,
+    _add_target,
+    _empty_stats,
+    _sample_reference,
+    _tie_break,
+    build_latest_model as _core_build_latest_model,
+    candidate_vector,
+    directional_raw_features,
+    fair_null_transform,
+    fit_additive_pairwise_ridge as _core_fit_additive_pairwise_ridge,
+    model_score,
 )
+from .v31_model_spec import FULL11_BASELINE_SPEC, spec_metadata
 
-MODEL_VERSION = "v31_directional_fair_null_additive_reverse_ridge_v1"
-REFERENCE_SAMPLES_PER_TARGET = 1024
-REFERENCE_SEED_OFFSET = 31_301
-SELECTION_STRATEGY = "v31_directional_model_score_top_k"
+MODEL_VERSION = FULL11_BASELINE_SPEC.name
+REFERENCE_SAMPLES_PER_TARGET = FULL11_BASELINE_SPEC.fair_reference_samples_per_target
+REFERENCE_SEED_OFFSET = FULL11_BASELINE_SPEC.reference_seed_offset
+SELECTION_STRATEGY = "v31_full11_experimental_baseline_score_top_k"
 PORTFOLIO_STRATEGY = "highest_raw_score_subject_to_pairwise_shared_numbers_le_2"
 AUDIT_POOL_SIZE = 1000
 PORTFOLIO_MAX_SHARED_NUMBERS = 2
 FAIR_RANDOM_OVERLAP_GE3_RATE = 0.023834078570323606
 
-FEATURE_NAMES = (
-    "number_full_log_lift",
-    "pair_full_log_lift",
-    "number_recent20_excess",
-    "number_recent100_excess",
-    "pair_recent100_excess",
-    "previous_draw_overlap",
-    "sum_signed_center_138",
-    "high_minus_low_zone_count",
-    "odd_count_signed_center_3",
-    "number_range",
-    "consecutive_pairs",
-)
 
-
-def _pair_indices(numbers: tuple[int, ...]) -> tuple[int, ...]:
-    return tuple(PAIR_TO_INDEX[(left, right)] for left, right in combinations(numbers, 2))
-
-
-def directional_raw_features(numbers: Iterable[int], context: dict) -> np.ndarray:
-    nums = tuple(sorted(int(number) for number in numbers))
-    if len(nums) != 6 or len(set(nums)) != 6 or nums[0] < 1 or nums[-1] > 45:
-        raise ValueError("candidate must contain six unique numbers in 1..45")
-    pair_indices = _pair_indices(nums)
-    gaps = [right - left for left, right in zip(nums, nums[1:])]
-    odd_count = sum(number % 2 for number in nums)
-    low_count = sum(number <= 15 for number in nums)
-    high_count = sum(number >= 31 for number in nums)
-    return np.asarray([
-        float(np.mean([context["number_lifts"][number] for number in nums])),
-        float(np.mean([context["pair_lifts"][index] for index in pair_indices])),
-        float(np.mean([context["recent20_number_rate"][number] for number in nums]) - UNIFORM_NUMBER_PROBABILITY),
-        float(np.mean([context["recent100_number_rate"][number] for number in nums]) - UNIFORM_NUMBER_PROBABILITY),
-        float(np.mean([context["recent100_pair_rate"][index] for index in pair_indices]) - UNIFORM_PAIR_PROBABILITY),
-        float(len(set(nums) & context["previous_draw"])),
-        float(sum(nums) - 138),
-        float(high_count - low_count),
-        float(odd_count - 3),
-        float(nums[-1] - nums[0]),
-        float(sum(gap == 1 for gap in gaps)),
-    ], dtype=float)
-
-
-def _sample_reference(context: dict, round_no: int, count: int) -> np.ndarray:
-    count = int(count)
-    if count <= 0:
-        raise ValueError("reference count must be positive")
-    rng = random.Random(int(round_no) * 310_007 + count * 3_101 + REFERENCE_SEED_OFFSET)
-    seen: set[tuple[int, ...]] = set()
-    rows: list[np.ndarray] = []
-    while len(rows) < count:
-        candidate = tuple(random_combination(rng))
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        rows.append(directional_raw_features(candidate, context))
-    return np.sort(np.asarray(rows, dtype=float), axis=0)
-
-
-def fair_null_transform(raw_vector: np.ndarray, sorted_reference: np.ndarray) -> np.ndarray:
-    raw = np.asarray(raw_vector, dtype=float)
-    reference = np.asarray(sorted_reference, dtype=float)
-    if raw.shape != (len(FEATURE_NAMES),):
-        raise ValueError("unexpected raw feature width")
-    if reference.ndim != 2 or reference.shape[1] != len(FEATURE_NAMES) or reference.shape[0] <= 0:
-        raise ValueError("unexpected reference shape")
-    n = reference.shape[0]
-    result = np.empty(len(FEATURE_NAMES), dtype=float)
-    for index, value in enumerate(raw):
-        column = reference[:, index]
-        left = int(np.searchsorted(column, value, side="left"))
-        right = int(np.searchsorted(column, value, side="right"))
-        result[index] = 2.0 * ((left + right) / (2.0 * n)) - 1.0
-    return result
-
-
-def candidate_vector(numbers: Iterable[int], context: dict, reference: np.ndarray) -> np.ndarray:
-    return fair_null_transform(directional_raw_features(numbers, context), reference)
-
-
-def _empty_stats() -> dict:
-    width = len(FEATURE_NAMES)
-    return {
-        "sum_outer": np.zeros((width, width), dtype=float),
-        "sum_diff": np.zeros(width, dtype=float),
-        "pair_rows": 0,
-        "solved_targets": 0,
-    }
-
-
-def _add_target(stats: dict, actual: np.ndarray, negatives: list[np.ndarray]) -> None:
-    for negative in negatives:
-        diff = np.asarray(actual - negative, dtype=float)
-        stats["sum_outer"] += np.outer(diff, diff)
-        stats["sum_diff"] += diff
-        stats["pair_rows"] += 1
-    stats["solved_targets"] += 1
-
-
-def fit_additive_pairwise_ridge(stats: dict, ridge_lambda: float = RIDGE_LAMBDA) -> dict:
-    rows = int(stats["pair_rows"])
-    if rows <= 0:
-        raise ValueError("training rows required")
-    second = np.asarray(stats["sum_outer"], dtype=float) / rows
-    mean_diff = np.asarray(stats["sum_diff"], dtype=float) / rows
-    rms = np.sqrt(np.maximum(np.diag(second), 0.0) + 1e-12)
-    scaled_second = second / np.outer(rms, rms)
-    scaled_mean = mean_diff / rms
-    system = scaled_second + float(ridge_lambda) * np.eye(len(FEATURE_NAMES), dtype=float)
-    try:
-        scaled_weights = np.linalg.solve(system, scaled_mean)
-    except np.linalg.LinAlgError:
-        scaled_weights = np.linalg.pinv(system) @ scaled_mean
-    return {
-        "ridge_lambda": float(ridge_lambda),
-        "rms": rms,
-        "scaled_weights": scaled_weights,
-        "effective_weights": scaled_weights / rms,
-        "pair_rows": rows,
-        "solved_targets": int(stats["solved_targets"]),
-    }
+def fit_additive_pairwise_ridge(
+    stats: dict,
+    ridge_lambda: float = FULL11_BASELINE_SPEC.ridge_lambda,
+) -> dict:
+    return _core_fit_additive_pairwise_ridge(stats, ridge_lambda=float(ridge_lambda))
 
 
 def build_latest_model(
     df: pd.DataFrame,
     start_index: int = BACKTEST_START_INDEX,
-    train_negatives_per_target: int = TRAIN_NEGATIVES_PER_TARGET,
+    train_negatives_per_target: int = FULL11_BASELINE_SPEC.train_negatives_per_target,
     reference_samples: int = REFERENCE_SAMPLES_PER_TARGET,
-    ridge_lambda: float = RIDGE_LAMBDA,
+    ridge_lambda: float = FULL11_BASELINE_SPEC.ridge_lambda,
 ) -> dict:
-    start_index = int(start_index)
-    if len(df) <= start_index:
-        raise ValueError("not enough completed draws")
-    state = _empty_history_state()
-    for idx in range(start_index):
-        _advance_history(state, tuple(row_numbers(df.iloc[idx])))
-    stats = _empty_stats()
-    for idx in range(start_index, len(df)):
-        actual = tuple(row_numbers(df.iloc[idx]))
-        round_no = int(df.iloc[idx][ROUND_COLUMN])
-        context = _feature_context(state)
-        reference = _sample_reference(context, round_no, reference_samples)
-        actual_vector = candidate_vector(actual, context, reference)
-        train_rng = random.Random(round_no * 200_003 + int(train_negatives_per_target) * 2_009 + 31_101)
-        negatives = _sample_fair_candidates(train_rng, int(train_negatives_per_target), actual)
-        negative_vectors = [candidate_vector(candidate, context, reference) for candidate in negatives]
-        _add_target(stats, actual_vector, negative_vectors)
-        _advance_history(state, actual)
-    model = fit_additive_pairwise_ridge(stats, ridge_lambda)
-    next_context = _feature_context(state)
-    latest_round = int(df.iloc[-1][ROUND_COLUMN])
-    next_reference = _sample_reference(next_context, latest_round + 1, reference_samples)
-    return {
-        "model": model,
-        "context": next_context,
-        "reference": next_reference,
-        "latest_round": latest_round,
-        "target_round": latest_round + 1,
-        "history_draws": int(state["history_draws"]),
-        "start_index": start_index,
-        "reference_samples": int(reference_samples),
-        "train_negatives_per_target": int(train_negatives_per_target),
-    }
-
-
-def model_score(numbers: Iterable[int], fitted: dict) -> float:
-    vector = candidate_vector(numbers, fitted["context"], fitted["reference"])
-    return float(np.dot(fitted["model"]["effective_weights"], vector))
-
-
-def _tie_break(numbers: Iterable[int], seed: int) -> int:
-    encoded = f"{int(seed)}:" + ",".join(str(int(n)) for n in numbers)
-    return int.from_bytes(hashlib.blake2b(encoded.encode("ascii"), digest_size=8).digest(), "big")
+    spec = replace(
+        FULL11_BASELINE_SPEC,
+        history_start_index=int(start_index),
+        train_negatives_per_target=int(train_negatives_per_target),
+        fair_reference_samples_per_target=int(reference_samples),
+        ridge_lambda=float(ridge_lambda),
+    )
+    return _core_build_latest_model(df, spec)
 
 
 def explain_candidate(numbers: Iterable[int], fitted: dict) -> dict:
@@ -273,13 +129,7 @@ def _select_portfolio_entries(
     top_k: int,
     max_shared_numbers: int = PORTFOLIO_MAX_SHARED_NUMBERS,
 ) -> tuple[list[tuple[float, int, tuple[int, ...]]], bool]:
-    """Keep model score order while rejecting unusually redundant tickets.
-
-    Two independent fair 6/45 tickets share at least three numbers only about 2.38%
-    of the time. The portfolio layer therefore accepts candidates in descending raw
-    model-score order only when they share at most two numbers with every already
-    selected ticket. This never changes model_score and never uses pattern aesthetics.
-    """
+    """Historical baseline selector retained for audit/test compatibility only."""
     top_k = int(top_k)
     max_shared_numbers = int(max_shared_numbers)
     selected: list[tuple[float, int, tuple[int, ...]]] = []
@@ -292,8 +142,6 @@ def _select_portfolio_entries(
             if len(selected) >= top_k:
                 return selected, False
 
-    # Safety fallback only if the retained ranking pool cannot satisfy the overlap
-    # rule. Fill by raw score rather than silently returning fewer tickets.
     chosen = {entry[2] for entry in selected}
     for entry in ranked:
         if entry[2] in chosen:
@@ -323,36 +171,52 @@ def generate_recommendations(
     seed_offset: int = 0,
     progress_every: int = 0,
 ) -> dict:
+    """Historical full-11 baseline. It is not the promoted current model."""
+    top_k = int(top_k)
+    if top_k <= 0:
+        raise ValueError("top_k must be positive")
+    progress_every = int(progress_every)
+    if progress_every < 0:
+        raise ValueError("progress_every must be non-negative")
+
     df = load_lotto_data()
-    profile = build_profile(df)
     fitted = build_latest_model(df)
     seed = make_seed(int(fitted["latest_round"]), int(seed_offset))
-    candidates = iter_all_combinations() if exhaustive else generate_candidates(int(candidate_count), seed)
-    mode = "exhaustive_all_8,145,060" if exhaustive else "sampled_candidates"
-    keep = max(int(top_k), min(AUDIT_POOL_SIZE, 8145060 if exhaustive else int(candidate_count)))
+    if exhaustive:
+        candidates = iter_all_combinations()
+        available = TOTAL_COMBINATION_COUNT
+        mode = "exhaustive_all_8,145,060"
+    else:
+        candidates = generate_candidates(int(candidate_count), seed)
+        available = len(candidates)
+        mode = "sampled_candidates"
+    if top_k > available:
+        raise ValueError("top_k cannot exceed available candidate count")
+
+    keep = max(top_k, min(AUDIT_POOL_SIZE, available))
     heap: list[tuple[float, int, tuple[int, ...]]] = []
     evaluated = 0
     for evaluated, candidate in enumerate(candidates, 1):
         nums = tuple(sorted(int(n) for n in candidate))
         score = model_score(nums, fitted)
-        entry = (score, _tie_break(nums, seed), nums)
+        entry = (score, _tie_break(nums), nums)
         if len(heap) < keep:
             heapq.heappush(heap, entry)
         elif entry[:2] > heap[0][:2]:
             heapq.heapreplace(heap, entry)
-        if progress_every and evaluated % int(progress_every) == 0:
-            print(f"v3.1 final ranking progress: {evaluated:,} candidates evaluated")
+        if progress_every and evaluated % progress_every == 0:
+            print(f"v3.1 full11 baseline ranking progress: {evaluated:,} candidates evaluated")
 
     ranked = sorted(heap, key=lambda item: (item[0], item[1]), reverse=True)
-    latest_pattern_type = str(profile["latest_pattern_type"])
+    latest_pattern_type = str(structure_record(row_numbers(df.iloc[-1]))["pattern_type"])
     raw_rank_lookup = {entry[2]: rank for rank, entry in enumerate(ranked, 1)}
 
-    selected = [explain_candidate(entry[2], fitted) for entry in ranked[: int(top_k)]]
+    selected = [explain_candidate(entry[2], fitted) for entry in ranked[:top_k]]
     for rank, item in enumerate(selected, 1):
         item["rank"] = rank
         _attach_structure(item, latest_pattern_type)
 
-    portfolio_entries, portfolio_relaxed = _select_portfolio_entries(ranked, int(top_k))
+    portfolio_entries, portfolio_relaxed = _select_portfolio_entries(ranked, top_k)
     portfolio = [explain_candidate(entry[2], fitted) for entry in portfolio_entries]
     for rank, item in enumerate(portfolio, 1):
         item["portfolio_rank"] = rank
@@ -362,6 +226,8 @@ def generate_recommendations(
     return {
         "meta": {
             "model_version": MODEL_VERSION,
+            "model_status": FULL11_BASELINE_SPEC.status,
+            "model_spec": spec_metadata(FULL11_BASELINE_SPEC),
             "latest_draw": int(fitted["latest_round"]),
             "target_draw": int(fitted["target_round"]),
             "evaluation_mode": mode,
@@ -369,17 +235,9 @@ def generate_recommendations(
             "selection_strategy": SELECTION_STRATEGY,
             "formula": "score(c)=w^T z(c), z_j=2*F_mid,j(x_j)-1",
             "feature_names": list(FEATURE_NAMES),
-            "feature_policy": "direction preserved; fair-null bounded; additive only; no quadratic interactions",
             "candidate_policy": "all valid 6-of-45 combinations; no hard filters or pattern quotas",
             "pattern_type_role": "metadata_only_not_used_in_ranking",
-            "portfolio": {
-                "strategy": PORTFOLIO_STRATEGY,
-                "source_pool_size": int(len(ranked)),
-                "max_shared_numbers": PORTFOLIO_MAX_SHARED_NUMBERS,
-                "fair_random_pair_overlap_ge_3_rate": FAIR_RANDOM_OVERLAP_GE3_RATE,
-                "ranking_score_modified": False,
-                "fallback_relaxed": bool(portfolio_relaxed),
-            },
+            "tie_policy": FULL11_BASELINE_SPEC.tie_policy,
             "training": {
                 "history_draws": int(fitted["history_draws"]),
                 "solved_targets": int(fitted["model"]["solved_targets"]),
@@ -387,6 +245,9 @@ def generate_recommendations(
                 "reference_samples_per_target": int(fitted["reference_samples"]),
                 "train_negatives_per_target": int(fitted["train_negatives_per_target"]),
                 "ridge_lambda": float(fitted["model"]["ridge_lambda"]),
+                "scaled_second_moment_condition_number": float(
+                    fitted["model"]["scaled_second_moment_condition_number"]
+                ),
             },
         },
         "bias_audit_top_pool": _bias_audit(ranked),
