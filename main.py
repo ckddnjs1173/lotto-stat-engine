@@ -1,10 +1,10 @@
-"""Stable CLI entry point for explicit v3.1 experimental scenarios.
+"""Stable CLI entry point for the frozen v3.1 personal model.
 
-No v3.1 scenario is currently promoted. The delegated runner requires
-``--scenario full11`` or ``--scenario clean3`` explicitly.
+Historical experimental FULL11/CLEAN3 runners remain available for reproducibility,
+but the unversioned stable entry point now delegates to the immutable frozen model.
 """
 
-from scripts.run_v31_final_recommend import main
+from scripts.run_v31_frozen_recommend import main
 
 
 if __name__ == "__main__":
