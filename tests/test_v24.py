@@ -3,7 +3,7 @@ import unittest
 import pandas as pd
 
 from lotto_engine.candidates import iter_all_combinations
-from lotto_engine.config import ROUND_COLUMN
+from lotto_engine.config import LOTTO_XLSX_PATH, ROUND_COLUMN
 from lotto_engine.filters import passes_hard_filter
 from lotto_engine.mixed_scoring import structure_record
 from lotto_engine.loader import load_lotto_data
@@ -17,6 +17,10 @@ from lotto_engine.mixed_subtypes import (
 )
 
 
+@unittest.skipUnless(
+    LOTTO_XLSX_PATH.exists(),
+    "legacy v2.4 integration tests require local data/lotto.xlsx",
+)
 class MixedSubtypeV24Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
