@@ -1,6 +1,7 @@
 import unittest
 from collections import Counter
 
+from lotto_engine.config import LOTTO_XLSX_PATH
 from lotto_engine.filters import passes_hard_filter
 from lotto_engine.loader import load_lotto_data
 from lotto_engine.mixed_scoring import structure_record
@@ -16,6 +17,10 @@ from lotto_engine.mixed_subtypes import (
 from lotto_engine.recommender import _select_diverse_mixed
 
 
+@unittest.skipUnless(
+    LOTTO_XLSX_PATH.exists(),
+    "legacy v2.5 integration tests require local data/lotto.xlsx",
+)
 class MixedSubtypeAllocationV25Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
