@@ -2,32 +2,45 @@ from __future__ import annotations
 
 import heapq
 import math
-import random
+from dataclasses import replace
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
 
-from .candidates import TOTAL_COMBINATION_COUNT, generate_candidates, iter_all_combinations, make_seed
-from .config import BACKTEST_START_INDEX, DEFAULT_CANDIDATE_COUNT, ROUND_COLUMN, TOP_K_RECOMMENDATIONS
-from .loader import dataset_fingerprint, load_lotto_data, row_numbers
+from .candidates import (
+    TOTAL_COMBINATION_COUNT,
+    generate_candidates,
+    iter_all_combinations,
+    make_seed,
+)
+from .config import BACKTEST_START_INDEX, DEFAULT_CANDIDATE_COUNT, TOP_K_RECOMMENDATIONS
+from .loader import load_lotto_data, row_numbers
 from .mixed_scoring import structure_record
-from .v28_reverse_ranking import RIDGE_LAMBDA, TRAIN_NEGATIVES_PER_TARGET, _advance_history, _empty_history_state, _feature_context, _sample_fair_candidates
-from .v31_final_directional_recommendation import FEATURE_NAMES, REFERENCE_SAMPLES_PER_TARGET, _add_target, _empty_stats, _sample_reference, _tie_break, candidate_vector, directional_raw_features, fair_null_transform
+from .v31_core import (
+    FEATURE_NAMES,
+    _tie_break,
+    build_latest_model as _core_build_latest_model,
+    candidate_vector,
+    directional_raw_features,
+    fair_null_transform,
+    fit_subset_pairwise_ridge,
+    model_score,
+)
+from .v31_model_spec import (
+    CLEAN3_CANDIDATE_SPEC,
+    CLEAN3_REMOVED_FEATURES,
+    spec_metadata,
+)
 
-MODEL_VERSION = "v31_clean3_fair_null_additive_reverse_ridge_v2"
+MODEL_VERSION = CLEAN3_CANDIDATE_SPEC.name
 AUDIT_POOL_SIZE = 1000
 PORTFOLIO_MAX_SHARED_NUMBERS = 2
 FAIR_RANDOM_OVERLAP_GE3_RATE = 0.023834078570323606
 
-DISABLED_PRODUCTION_FEATURES = (
-    "previous_draw_overlap",
-    "number_range",
-    "consecutive_pairs",
-)
-ACTIVE_PRODUCTION_FEATURES = tuple(
-    name for name in FEATURE_NAMES if name not in DISABLED_PRODUCTION_FEATURES
-)
+# Compatibility aliases. CLEAN3 is an experimental candidate, not a promoted production model.
+DISABLED_PRODUCTION_FEATURES = CLEAN3_REMOVED_FEATURES
+ACTIVE_PRODUCTION_FEATURES = CLEAN3_CANDIDATE_SPEC.active_features
 ACTIVE_PRODUCTION_INDICES = tuple(
     FEATURE_NAMES.index(name) for name in ACTIVE_PRODUCTION_FEATURES
 )
@@ -40,102 +53,41 @@ FAIR_EXPECTED_PREVIOUS_DRAW_OVERLAP = 36.0 / 45.0
 FAIR_ANY_PREVIOUS_DRAW_OVERLAP_RATE = 1.0 - math.comb(39, 6) / math.comb(45, 6)
 
 
-def fit_clean3_pairwise_ridge(stats: dict, ridge_lambda: float = RIDGE_LAMBDA) -> dict:
-    """Refit the ridge system after removing the three audited distorters."""
-    rows = int(stats["pair_rows"])
-    if rows <= 0:
-        raise ValueError("training rows required")
-
-    active = ACTIVE_PRODUCTION_INDICES
-    second_full = np.asarray(stats["sum_outer"], dtype=float) / rows
-    mean_full = np.asarray(stats["sum_diff"], dtype=float) / rows
-    second = second_full[np.ix_(active, active)]
-    mean_diff = mean_full[list(active)]
-
-    rms_active = np.sqrt(np.maximum(np.diag(second), 0.0) + 1e-12)
-    scaled_second = second / np.outer(rms_active, rms_active)
-    scaled_mean = mean_diff / rms_active
-    system = scaled_second + float(ridge_lambda) * np.eye(len(active), dtype=float)
-    try:
-        scaled_active = np.linalg.solve(system, scaled_mean)
-    except np.linalg.LinAlgError:
-        scaled_active = np.linalg.pinv(system) @ scaled_mean
-
-    effective = np.zeros(len(FEATURE_NAMES), dtype=float)
-    scaled = np.zeros(len(FEATURE_NAMES), dtype=float)
-    rms = np.zeros(len(FEATURE_NAMES), dtype=float)
-    effective[list(active)] = scaled_active / rms_active
-    scaled[list(active)] = scaled_active
-    rms[list(active)] = rms_active
-
+def fit_clean3_pairwise_ridge(
+    stats: dict,
+    ridge_lambda: float = CLEAN3_CANDIDATE_SPEC.ridge_lambda,
+) -> dict:
+    """Refit the same ridge objective on the CLEAN3 candidate subset."""
+    model = fit_subset_pairwise_ridge(
+        stats,
+        ACTIVE_PRODUCTION_INDICES,
+        ridge_lambda=float(ridge_lambda),
+    )
     return {
-        "ridge_lambda": float(ridge_lambda),
-        "rms": rms,
-        "scaled_weights": scaled,
-        "effective_weights": effective,
-        "active_indices": active,
+        **model,
         "active_features": ACTIVE_PRODUCTION_FEATURES,
         "disabled_features": DISABLED_PRODUCTION_FEATURES,
-        "pair_rows": rows,
-        "solved_targets": int(stats["solved_targets"]),
     }
 
 
 def build_latest_model(
     df: pd.DataFrame,
     start_index: int = BACKTEST_START_INDEX,
-    train_negatives_per_target: int = TRAIN_NEGATIVES_PER_TARGET,
-    reference_samples: int = REFERENCE_SAMPLES_PER_TARGET,
-    ridge_lambda: float = RIDGE_LAMBDA,
+    train_negatives_per_target: int = CLEAN3_CANDIDATE_SPEC.train_negatives_per_target,
+    reference_samples: int = CLEAN3_CANDIDATE_SPEC.fair_reference_samples_per_target,
+    ridge_lambda: float = CLEAN3_CANDIDATE_SPEC.ridge_lambda,
 ) -> dict:
-    start_index = int(start_index)
-    if len(df) <= start_index:
-        raise ValueError("not enough completed draws")
-
-    state = _empty_history_state()
-    for idx in range(start_index):
-        _advance_history(state, tuple(row_numbers(df.iloc[idx])))
-
-    stats = _empty_stats()
-    for idx in range(start_index, len(df)):
-        actual = tuple(row_numbers(df.iloc[idx]))
-        round_no = int(df.iloc[idx][ROUND_COLUMN])
-        context = _feature_context(state)
-        reference = _sample_reference(context, round_no, int(reference_samples))
-        actual_vector = candidate_vector(actual, context, reference)
-        train_rng = random.Random(
-            round_no * 200_003 + int(train_negatives_per_target) * 2_009 + 31_101
-        )
-        negatives = _sample_fair_candidates(train_rng, int(train_negatives_per_target), actual)
-        negative_vectors = [
-            candidate_vector(candidate, context, reference) for candidate in negatives
-        ]
-        _add_target(stats, actual_vector, negative_vectors)
-        _advance_history(state, actual)
-
-    model = fit_clean3_pairwise_ridge(stats, ridge_lambda=float(ridge_lambda))
-    latest_round = int(df.iloc[-1][ROUND_COLUMN])
-    next_context = _feature_context(state)
-    next_reference = _sample_reference(
-        next_context, latest_round + 1, int(reference_samples)
+    spec = replace(
+        CLEAN3_CANDIDATE_SPEC,
+        history_start_index=int(start_index),
+        train_negatives_per_target=int(train_negatives_per_target),
+        fair_reference_samples_per_target=int(reference_samples),
+        ridge_lambda=float(ridge_lambda),
     )
-    return {
-        "model": model,
-        "context": next_context,
-        "reference": next_reference,
-        "latest_round": latest_round,
-        "target_round": latest_round + 1,
-        "history_draws": int(state["history_draws"]),
-        "reference_samples": int(reference_samples),
-        "train_negatives_per_target": int(train_negatives_per_target),
-        "dataset_rows": int(len(df)),
-        "dataset_sha256": dataset_fingerprint(df),
-    }
-
-
-def model_score(numbers: Iterable[int], fitted: dict) -> float:
-    vector = candidate_vector(numbers, fitted["context"], fitted["reference"])
-    return float(np.dot(fitted["model"]["effective_weights"], vector))
+    fitted = _core_build_latest_model(df, spec)
+    fitted["model"]["active_features"] = ACTIVE_PRODUCTION_FEATURES
+    fitted["model"]["disabled_features"] = DISABLED_PRODUCTION_FEATURES
+    return fitted
 
 
 def explain_candidate(numbers: Iterable[int], fitted: dict) -> dict:
@@ -180,6 +132,7 @@ def bias_audit(
     entries: list[tuple[float, int, tuple[int, ...]]],
     previous_draw: Iterable[int] | None = None,
 ) -> dict:
+    """Distribution diagnostics only; distance from fair is not a deletion criterion."""
     combos = [tuple(entry[2]) for entry in entries]
     if not combos:
         return {}
@@ -210,6 +163,7 @@ def bias_audit(
 
     total_slots = 6 * len(combos)
     payload = {
+        "diagnostic_role": "ranking_distribution_only_not_model_selection_gate",
         "pool_size": len(combos),
         "fair_expected_number_inclusion_rate": 6.0 / 45.0,
         "number_inclusion_rates": {
@@ -221,9 +175,7 @@ def bias_audit(
         "mean_odd_count": float(np.mean(odds)),
         "mean_number_range": float(np.mean(ranges)),
         "mean_consecutive_pairs": float(np.mean(consecutive)),
-        "any_consecutive_pair_rate": float(
-            np.mean([value > 0 for value in consecutive])
-        ),
+        "any_consecutive_pair_rate": float(np.mean([value > 0 for value in consecutive])),
         "zone_slot_rates": {
             "1_15": low / total_slots,
             "16_30": mid / total_slots,
@@ -243,9 +195,7 @@ def bias_audit(
             {
                 "previous_draw_numbers": sorted(previous),
                 "mean_previous_draw_overlap": float(np.mean(overlaps)),
-                "any_previous_draw_overlap_rate": float(
-                    np.mean([value > 0 for value in overlaps])
-                ),
+                "any_previous_draw_overlap_rate": float(np.mean([value > 0 for value in overlaps])),
             }
         )
     return payload
@@ -258,7 +208,14 @@ def generate_raw_recommendations(
     seed_offset: int = 0,
     progress_every: int = 0,
 ) -> dict:
-    """Raw CLEAN3 ranking without downstream portfolio diversification."""
+    """Experimental CLEAN3 ranking. This function does not imply model promotion."""
+    top_k = int(top_k)
+    if top_k <= 0:
+        raise ValueError("top_k must be positive")
+    progress_every = int(progress_every)
+    if progress_every < 0:
+        raise ValueError("progress_every must be non-negative")
+
     df = load_lotto_data()
     fitted = build_latest_model(df)
     seed = make_seed(int(fitted["latest_round"]), int(seed_offset))
@@ -271,27 +228,25 @@ def generate_raw_recommendations(
         candidates = generate_candidates(int(candidate_count), seed)
         available = len(candidates)
         mode = "sampled_candidates"
+    if top_k > available:
+        raise ValueError("top_k cannot exceed available candidate count")
 
-    keep = min(available, max(int(top_k), AUDIT_POOL_SIZE))
+    keep = min(available, max(top_k, AUDIT_POOL_SIZE))
     heap: list[tuple[float, int, tuple[int, ...]]] = []
     evaluated = 0
     for evaluated, candidate in enumerate(candidates, 1):
         nums = tuple(sorted(int(n) for n in candidate))
-        entry = (model_score(nums, fitted), _tie_break(nums, seed), nums)
+        entry = (model_score(nums, fitted), _tie_break(nums), nums)
         if len(heap) < keep:
             heapq.heappush(heap, entry)
         elif entry[:2] > heap[0][:2]:
             heapq.heapreplace(heap, entry)
-        if progress_every and evaluated % int(progress_every) == 0:
-            print(f"v3.1 CLEAN3 ranking progress: {evaluated:,} candidates evaluated")
+        if progress_every and evaluated % progress_every == 0:
+            print(f"v3.1 CLEAN3 candidate ranking progress: {evaluated:,} candidates evaluated")
 
     ranked = sorted(heap, key=lambda item: (item[0], item[1]), reverse=True)
-    latest_pattern_type = str(
-        structure_record(row_numbers(df.iloc[-1]))["pattern_type"]
-    )
-    recommendations = [
-        explain_candidate(entry[2], fitted) for entry in ranked[: int(top_k)]
-    ]
+    latest_pattern_type = str(structure_record(row_numbers(df.iloc[-1]))["pattern_type"])
+    recommendations = [explain_candidate(entry[2], fitted) for entry in ranked[:top_k]]
     for rank, item in enumerate(recommendations, 1):
         item["rank"] = rank
         attach_structure(item, latest_pattern_type)
@@ -299,6 +254,8 @@ def generate_raw_recommendations(
     return {
         "meta": {
             "model_version": MODEL_VERSION,
+            "model_status": CLEAN3_CANDIDATE_SPEC.status,
+            "model_spec": spec_metadata(CLEAN3_CANDIDATE_SPEC),
             "latest_draw": int(fitted["latest_round"]),
             "target_draw": int(fitted["target_round"]),
             "evaluation_mode": mode,
@@ -307,17 +264,28 @@ def generate_raw_recommendations(
             "raw_feature_names": list(FEATURE_NAMES),
             "active_feature_names": list(ACTIVE_PRODUCTION_FEATURES),
             "disabled_feature_names": list(DISABLED_PRODUCTION_FEATURES),
-            "candidate_policy": (
-                "all valid 6-of-45 combinations; no hard filters or pattern quotas"
-            ),
+            "candidate_policy": "all valid 6-of-45 combinations; no hard filters or pattern quotas",
             "pattern_type_role": "metadata_only_not_used_in_ranking",
+            "tie_policy": CLEAN3_CANDIDATE_SPEC.tie_policy,
             "data": {
                 "rows": int(fitted["dataset_rows"]),
                 "sha256": str(fitted["dataset_sha256"]),
             },
+            "training": {
+                "history_draws": int(fitted["history_draws"]),
+                "solved_targets": int(fitted["model"]["solved_targets"]),
+                "pair_rows": int(fitted["model"]["pair_rows"]),
+                "reference_samples_per_target": int(fitted["reference_samples"]),
+                "train_negatives_per_target": int(fitted["train_negatives_per_target"]),
+                "ridge_lambda": float(fitted["model"]["ridge_lambda"]),
+                "scaled_second_moment_condition_number": float(
+                    fitted["model"]["scaled_second_moment_condition_number"]
+                ),
+            },
         },
-        "bias_audit_top_pool": bias_audit(
+        "ranking_distribution_diagnostics_top_pool": bias_audit(
             ranked, fitted["context"]["previous_draw"]
         ),
+        "bias_audit_top_pool": bias_audit(ranked, fitted["context"]["previous_draw"]),
         "recommendations": recommendations,
     }
