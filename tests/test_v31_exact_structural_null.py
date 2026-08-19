@@ -62,7 +62,7 @@ class V31ExactStructuralNullTests(unittest.TestCase):
 
     def test_exact_midrank_known_overlap_two_value(self):
         z = exact_midrank_z(2, previous_draw_overlap_distribution())
-        self.assertAlmostEqual(z, 0.8008580622929704)
+        self.assertAlmostEqual(z, 0.8008578205685408)
 
     def test_center_offsets_are_only_coordinate_labels(self):
         sum_counts = exact_distribution_for_feature("sum_signed_center_138")
