@@ -94,7 +94,7 @@ secondary = fixed combination order
 
 ### 4. feature correlation
 
-`number_full`/`pair_full`, `recent20`/`recent100`, number/pair recency는 서로 독립 축이 아닙니다. 특히 pair hit에는 개별 번호 hit의 marginal 효과가 구조적으로 포함됩니다. 다음 감사에서는 전체 11-feature LOO뿐 아니라 group ablation, coefficient stability, condition number, pair residualization을 확인합니다.
+`number_full`/`pair_full`, `recent20`/`recent100`, number/pair recency는 서로 독립 축이 아닙니다. 특히 pair hit에는 개별 번호 hit의 marginal 효과가 구조적으로 포함됩니다. 전체 11-feature LOO와 group ablation, coefficient sign stability를 별도 감사합니다.
 
 ## ModelSpec / 재현성
 
@@ -172,13 +172,56 @@ loader는 다음을 hard validation합니다.
 python scripts\validate_data.py
 ```
 
-## 테스트
+## 감사 runner
+
+### Reference stability
+
+fitted weight를 고정하고 latest fair-reference만 교란/확장합니다. 성능 튜닝용이 아니라 수치 수렴성 진단용입니다.
+
+```powershell
+python scripts\run_v31_reference_stability_audit.py \
+  --scenario full11 \
+  --candidate-count 20000
+```
+
+주요 출력:
+
+- Pearson score correlation
+- Spearman rank correlation
+- TOP-10/100/1000 Jaccard
+- exact-score duplicate count
+- feature별 `z=±1` saturation rate
+- reference count 증가에 따른 nested convergence
+
+### Full 11-feature / group audit
+
+모든 단일 feature와 상관 group을 동일한 strict walk-forward 조건에서 leave-out합니다.
+
+```powershell
+python scripts\run_v31_full_feature_audit.py \
+  --baseline-samples 500 \
+  --bootstrap-reps 2000
+```
+
+포함 group:
+
+- long-run number + pair
+- all recency
+- number marginal family
+- pair family
+- all structural features
+
+또한 FULL11 coefficient mean/std, 부호 비율, sign-flip count, 최근100 평균을 기록합니다.
+
+## 테스트 / CI
+
+로컬 전체 회귀 테스트:
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-현재 GitHub branch에는 자동 CI status check가 연결되어 있지 않습니다. 따라서 pull 후 로컬 전체 unittest 실행이 실제 실행 검증 기준입니다.
+PR/push에서는 `.github/workflows/tests.yml`이 동일한 unittest suite를 GitHub Actions에서 실행하도록 추가했습니다. 다만 실제 `data/lotto.xlsx`는 저장소에 포함하지 않으므로 최신 로컬 데이터 검증과 실데이터 smoke/audit는 로컬에서 별도로 실행해야 합니다.
 
 ## 다음 감사 순서
 
