@@ -30,6 +30,7 @@ python scripts\run_recommend.py --scenario clean3
   - pairwise ridge sufficient statistics and fitting
   - fixed RNG-free combination tie key
   - latest model fitting
+  - ridge moment eigenvalue/condition diagnostics
 - `lotto_engine/v31_scenario_recommendation.py`
   - explicit FULL11/CLEAN3 scenario ranking
   - full/sampled candidate enumeration
@@ -87,7 +88,23 @@ This compares FULL11 with CLEAN3/CLEAN4 multi-feature removals. It is diagnostic
 - `scripts/run_v31_reference_stability_audit.py`
 - `tests/test_v31_reference_stability_audit.py`
 
-This holds fitted weights fixed and perturbs/enlarges only the latest fair reference. It measures score correlation, rank correlation, TOP-10/100/1000 Jaccard, exact-score duplication, and feature saturation. It must not be used to pick whichever reference count happens to score historical winners best.
+This holds fitted weights fixed and perturbs/enlarges only the latest fair reference. It measures score correlation, rank correlation, TOP-10/100/1000 Jaccard, exact-score duplication, coordinate movement, and feature saturation. It must not be used to pick whichever reference count happens to score historical winners best.
+
+### Full 11-feature / correlated-group audit
+
+- `lotto_engine/v31_full_feature_audit.py`
+- `scripts/run_v31_full_feature_audit.py`
+- `tests/test_v31_full_feature_audit.py`
+
+This performs strict walk-forward comparisons of FULL11 against every single-feature removal and the predefined correlated groups:
+
+- long-run number + pair
+- all recency
+- number marginal family
+- pair family
+- all structural features
+
+It also records coefficient mean/std, sign fractions, sign flips, recent-100 means, and conditioning diagnostics. It is diagnostic only and does not automatically promote/delete features.
 
 ### Exact structural nulls
 
@@ -95,6 +112,13 @@ This holds fitted weights fixed and perturbs/enlarges only the latest fair refer
 - `tests/test_v31_exact_structural_null.py`
 
 Exact whole-universe fair-null distributions are available for overlap, sum, high-minus-low zones, odd count, range, and consecutive-pair count. These exact coordinates are not yet wired into FULL11/CLEAN3; they are a separately audited representation change.
+
+## Tests and CI
+
+- `.github/workflows/tests.yml` runs `python -m unittest discover -s tests -v` on branch pushes and pull requests.
+- Legacy v2.2/v2.4/v2.5 integration classes explicitly skip when local `data/lotto.xlsx` is absent; with the workbook present locally, they still execute normally.
+- Latest v3.1 stabilization CI passed after this distinction was added.
+- Real-data validation and model audits still require the user's local workbook because it is intentionally not stored in GitHub.
 
 ## Historical research retained for reproducibility
 
@@ -129,4 +153,5 @@ Before any new model promotion:
 4. inspect saturation/tie diagnostics;
 5. run full feature/group ablations;
 6. inspect ridge coefficient/condition stability;
-7. only then freeze a scenario for future independent draws.
+7. audit number-vs-pair marginal duplication/residualization;
+8. only then freeze a scenario for future independent draws.
