@@ -2,88 +2,132 @@
 
 개인용 Lotto 6/45 통계 랭킹 연구 엔진입니다.
 
-`model_score`는 실제 당첨확률이 아니라 **현재 계산식이 후보 조합을 정렬하기 위한 내부 점수**입니다. 과거 walk-forward 검증은 재현 가능한 우위를 입증하지 못했으며, 이 저장소는 그 사실과 별개로 계산식이 만든 raw ranking을 그대로 보존합니다.
+`model_score`는 실제 당첨확률이 아니라 과거 데이터에서 학습한 계산식이 후보 조합을 정렬하기 위한 내부 점수입니다. 과거 walk-forward 결과는 재현 가능한 우위를 입증하지 못했으며, 현재 v3.1의 어떤 feature subset도 최종 모델로 승격되어 있지 않습니다.
 
-## 현재 실행 경로
+## 현재 상태
 
-현재 기본 실행은 하나로 통일되어 있습니다.
+v3.1은 **모델 가족을 감사 중인 단계**입니다.
 
-```powershell
-python main.py
+공통 구조:
+
+```text
+raw feature
+→ fair-null coordinate z_j
+→ pairwise actual-vs-fair ridge
+→ score(c)=w^T z(c)
+→ 모든 C(45,6)=8,145,060 조합 ranking
 ```
 
-또는:
+현재 비교 시나리오:
+
+- `full11`: 기존 11-feature v3.1 baseline. 상태는 `experimental_baseline_not_promoted`.
+- `clean3`: `previous_draw_overlap`, `number_range`, `consecutive_pairs`를 동시에 제거하고 재학습한 후보. 상태는 `experimental_candidate_requires_joint_and_stability_audit`.
+
+**CLEAN3는 더 이상 현재/production 모델로 취급하지 않습니다.** 개별 leave-one-out 결과가 모두 불확정인 상태에서 세 feature를 묶어 먼저 승격한 것은 절차상 너무 빨랐기 때문입니다.
+
+## 실행
+
+안전장치로 시나리오를 반드시 명시해야 합니다.
 
 ```powershell
-python scripts\run_recommend.py
+python main.py --scenario full11
+python main.py --scenario clean3
 ```
 
-둘 다 `scripts/run_v31_final_recommend.py`의 현재 개인용 모델을 실행합니다.
-
-기본 모드는 `C(45,6) = 8,145,060`개 전체 조합 전수평가입니다. 빠른 확인용으로만:
+동일한 stable alias:
 
 ```powershell
-python scripts\run_recommend.py --sampled --candidate-count 20000
+python scripts\run_recommend.py --scenario full11
+python scripts\run_recommend.py --scenario clean3
 ```
 
-를 사용합니다.
+빠른 wiring 확인:
 
-## 현재 모델: v3.1 CLEAN3
+```powershell
+python scripts\run_recommend.py --scenario full11 --sampled --candidate-count 20000
+```
 
-현재 점수식은 과거 정답을 target 시점 이후에만 학습에 추가하는 역산(pairwise ridge) 구조입니다.
+최종 전수평가가 필요한 경우에만 `--sampled`를 제거합니다.
 
-각 후보의 raw feature는 해당 시점의 공정 6/45 reference 조합 1,024개와 비교해:
+## 현재 계산식
+
+기존 v3.1 baseline은 매 역사 target에서 1,024개의 deterministic fair 6/45 reference를 만들고 feature별 empirical midrank를 사용합니다.
 
 ```text
 z_j = 2 * F_mid,j(x_j) - 1
-```
-
-로 `[-1, 1]`의 fair-null 좌표로 변환됩니다.
-
-최종 점수는 활성 feature만 다시 적합한 additive ridge입니다.
-
-```text
 score(c) = w_A^T z_A(c)
 ```
 
-### 활성 feature 8개
+`A`는 선택한 시나리오의 active feature 집합입니다.
 
-- `number_full_log_lift`
-- `pair_full_log_lift`
-- `number_recent20_excess`
-- `number_recent100_excess`
-- `pair_recent100_excess`
+역사 학습에서 target 정답은 target의 context/reference/outer score가 만들어진 뒤에만 training state에 추가됩니다. 따라서 회차 내부 target leakage는 막혀 있습니다. 다만 모델 클래스와 feature 선택이 같은 역사 데이터를 반복해서 본 뒤 결정되어 왔으므로 이 검증은 독립적인 최종 OOS 증명이 아니라 post-selection exploratory walk-forward로 해석해야 합니다.
+
+## 중요한 재검토 항목
+
+### 1. 1,024 reference 해상도
+
+814만 조합을 1,024개 empirical CDF로 변환하면 극단 꼬리에서 `z=-1/+1` 포화와 score plateau가 생길 수 있습니다. TOP-10/TOP-1000 세부 순위가 reference sample 선택에 안정적인지 별도 감사가 필요합니다.
+
+### 2. tie policy
+
+과거에는 동점 조합을 seed 기반 BLAKE2 hash로 순서화했습니다. 현재 공통 core는 RNG를 사용하지 않고 고정 조합 순서로 동점을 처리합니다.
+
+```text
+primary   = model_score
+secondary = fixed combination order
+```
+
+`--seed-offset`은 sampled candidate 생성에만 영향을 주며 exhaustive ranking 동점 순서에는 영향을 주지 않습니다.
+
+### 3. exact structural fair-null
+
+다음 여섯 구조 feature는 1,024개 Monte Carlo reference 없이 전체 8,145,060 조합의 정확한 분포를 계산할 수 있습니다.
+
+- `previous_draw_overlap`
 - `sum_signed_center_138`
 - `high_minus_low_zone_count`
 - `odd_count_signed_center_3`
-
-### 제외 feature 3개
-
-1237회까지 반영한 1238회 전수 TOP-1000 component audit에서 다음 세 항목은 최신 ranking을 강하게 왜곡했지만 독립 historical OOS 기여가 확인되지 않았습니다.
-
-- `previous_draw_overlap`
 - `number_range`
 - `consecutive_pairs`
 
-따라서 단순히 결과에서 contribution을 0으로 숨기는 것이 아니라 **세 feature를 제외한 8개 feature로 ridge를 다시 적합**합니다.
+`lotto_engine/v31_exact_structural_null.py`에 정확한 조합수/CDF 구현을 추가했습니다. **아직 FULL11/CLEAN3 baseline 계산에는 연결하지 않았습니다.** 기존 결과를 보존한 상태에서 별도 stability audit 후 representation 변경 여부를 결정합니다.
 
-`number_full_log_lift`는 강한 concentration을 만들 수 있지만, focused leave-one-out audit에서 네 항목 중 전체/최근300/최근100이 가장 일관되게 양의 OOS 방향이어서 유지합니다.
+### 4. feature correlation
 
-자세한 숫자는 `docs/v31_component_influence_result.md`를 참고하세요.
+`number_full`/`pair_full`, `recent20`/`recent100`, number/pair recency는 서로 독립 축이 아닙니다. 특히 pair hit에는 개별 번호 hit의 marginal 효과가 구조적으로 포함됩니다. 다음 감사에서는 전체 11-feature LOO뿐 아니라 group ablation, coefficient stability, condition number, pair residualization을 확인합니다.
+
+## ModelSpec / 재현성
+
+v3.1 계산 상수는 `lotto_engine/v31_model_spec.py`의 frozen dataclass로 모았습니다.
+
+포함 항목:
+
+- feature 목록과 active subset
+- history start index
+- number/pair Bayesian prior
+- recent window
+- training negative 수
+- fair reference 수
+- ridge lambda
+- RNG seed offsets
+- tie policy
+
+각 실행은 canonical model spec의 SHA-256을 출력합니다. 데이터도 normalized draw history SHA-256을 기록합니다.
 
 ## 후보 정책
 
 - 1~45 중 서로 다른 6개인 모든 조합이 유효합니다.
 - hard filter가 없습니다.
-- 합계, 홀짝, 구간, 연속수 등을 “예쁘게” 맞추는 quota가 없습니다.
-- Normal/Mixed/Outlier는 출력 설명용 metadata일 뿐 ranking에 사용하지 않습니다.
-- 검증 실패를 이유로 raw score에 confidence multiplier를 곱하거나 50점으로 중립화하지 않습니다.
+- all-odd/all-even, 극단 합계, 좁은 range, 연속수 많은 조합도 제거하지 않습니다.
+- Normal/Mixed/Outlier 같은 구조 분류는 ranking 규칙이 아닙니다.
+- ranking distribution이 fair 평균과 멀다는 사실만으로 feature를 삭제하지 않습니다.
+- validation 결과를 raw score에 곱해 중립화하지 않습니다.
 
 ## 포트폴리오
 
-RAW TOP-K와 구매용 분산 포트폴리오는 분리되어 있습니다.
+구매용 분산은 모델 score 이후 단계입니다.
 
-현재 portfolio는 상위 raw-score 후보 50,000개를 순서대로 보면서:
+현재 strict selector는 raw-score 상위 pool을 순서대로 보면서:
 
 ```text
 티켓 간 공통번호 <= 2
@@ -91,15 +135,17 @@ AND
 한 번호의 노출 <= 전체 티켓의 40%
 ```
 
-를 만족하는 티켓만 고릅니다.
+를 만족하는 티켓만 선택합니다.
 
-- raw model score는 수정하지 않습니다.
-- 제약을 만족하지 못한다고 규칙을 완화하지 않습니다.
-- 후보 pool에서 K장을 채울 수 없으면 `complete=false`와 함께 적은 수를 반환합니다.
+- raw score 수정 없음
+- fallback relaxation 없음
+- pool에서 K장을 못 채우면 적은 수를 반환하고 `complete=false`
 
-## 데이터
+공용 구현은 `lotto_engine/strict_portfolio.py`입니다.
 
-로컬 데이터 파일:
+## 데이터 무결성
+
+로컬 데이터:
 
 ```text
 data/lotto.xlsx
@@ -113,48 +159,35 @@ data/lotto.xlsx
 
 loader는 다음을 hard validation합니다.
 
-- 1회부터 최신 회차까지 누락 없는 연속 회차
+- 1회부터 최신까지 누락 없는 연속 회차
 - 중복 회차 없음
-- 각 회차 6개 번호의 중복 없음
+- 회차/번호가 유한한 정수인지 확인
+- `12.5 -> 12` 같은 암묵적 truncation 금지
+- 각 회차 6개 번호 중복 없음
 - 번호 범위 1~45
 
-각 실행 결과에는 normalize된 draw history의 SHA-256 fingerprint가 포함됩니다.
+검증:
 
 ```powershell
 python scripts\validate_data.py
 ```
 
-## 검증
-
-전체 회귀 테스트:
+## 테스트
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-빠른 계산 smoke:
+현재 GitHub branch에는 자동 CI status check가 연결되어 있지 않습니다. 따라서 pull 후 로컬 전체 unittest 실행이 실제 실행 검증 기준입니다.
 
-```powershell
-python scripts\run_recommend.py --sampled --candidate-count 20000 --output-json data\cache\v31_final_personal.json
-```
+## 다음 감사 순서
 
-최종 전수 계산:
-
-```powershell
-python scripts\run_recommend.py --top-k 10 --progress-every 1000000 --output-json data\cache\v31_final_personal.json
-```
-
-## 저장소 구조
-
-현재 사용 파일과 과거 연구 재현용 파일을 구분해 두었습니다.
-
-- 현재 모델/실행: `lotto_engine/v31_clean3_recommendation.py`, `lotto_engine/v31_final_portfolio.py`, `scripts/run_v31_final_recommend.py`
-- component 감사: `lotto_engine/v31_component_influence_audit.py`, `lotto_engine/v31_joint_ablation_audit.py`
-- v2.7~v3.0 파일: 과거 실험 재현과 테스트를 위해 보존
-- 상세 지도: `docs/repository_map.md`
-
-과거 버전 runner는 연구 재현용입니다. **일상 실행은 `main.py` 또는 `scripts/run_recommend.py`만 사용하세요.**
-
-## 해석 원칙
-
-로또 6/45의 특정 조합은 공정 추첨에서 다른 특정 조합과 같은 확률을 가집니다. 이 엔진은 그 사실을 바꾸지 않습니다. 통계 모델은 과거 데이터에서 학습된 ranking 신호를 계산할 뿐이며, historical validation 결과는 별도로 기록합니다.
+1. reference seed/size stability
+2. z saturation 및 score tie/cutoff multiplicity
+3. exact structural null representation 비교
+4. 11개 전체 leave-one-out
+5. long-run / recency / structure group ablation
+6. number-vs-pair 중복 및 pair residualization
+7. ridge coefficient/condition stability
+8. 그 결과 이후에만 feature subset 확정
+9. 모델 동결 후 새로운 미래 회차를 독립 검증 구간으로 누적
