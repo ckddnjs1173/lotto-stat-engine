@@ -1,8 +1,8 @@
-# v3.1 component influence result and CLEAN3 decision
+# v3.1 component influence result and withdrawn provisional CLEAN3 decision
 
 ## Dataset / target
 
-The decisive component audit was run locally with draw 1237 included:
+The focused component audit was run locally with draw 1237 included:
 
 ```text
 latest reflected draw = 1237
@@ -29,16 +29,16 @@ This does not establish a historical ranking edge over fair alternatives.
 
 `full-minus-without` is positive when retaining the feature helped the full model and negative when removing it was better.
 
-| feature | full-minus-without | recent300 | recent100 | bootstrap CI95 | decision |
+| feature | full-minus-without | recent300 | recent100 | bootstrap CI95 | current interpretation |
 |---|---:|---:|---:|---|---|
-| previous_draw_overlap | +0.1489 | -0.4020 | -0.1460 | [-0.5188, 0.8932] | remove from current fit |
-| number_full_log_lift | +0.7256 | +1.2607 | +1.0820 | [-0.0768, 1.5165] | retain |
-| consecutive_pairs | -0.0473 | +0.0800 | +0.4620 | [-0.6156, 0.5393] | remove from current fit |
-| number_range | -0.0488 | +0.5180 | +1.5980 | [-0.4413, 0.3535] | remove from current fit |
+| previous_draw_overlap | +0.1489 | -0.4020 | -0.1460 | [-0.5188, 0.8932] | inconclusive |
+| number_full_log_lift | +0.7256 | +1.2607 | +1.0820 | [-0.0768, 1.5165] | inconclusive, positive direction |
+| consecutive_pairs | -0.0473 | +0.0800 | +0.4620 | [-0.6156, 0.5393] | inconclusive |
+| number_range | -0.0488 | +0.5180 | +1.5980 | [-0.4413, 0.3535] | inconclusive |
 
-None of the four intervals individually excludes zero. The decision is therefore not a claim that one coefficient is statistically proven. It combines historical value with the magnitude of the latest ranking distortion.
+None of the four bootstrap intervals excludes zero. Therefore none of these four features has a decisive individual historical keep/remove result from this audit.
 
-## Latest full-11 TOP-1000 distortion
+## Latest full-11 TOP-1000 distribution
 
 ```text
 23 inclusion rate = 1.000
@@ -61,32 +61,50 @@ expected consecutive pairs = 0.666667...
 expected number range = 32.857143...
 ```
 
-Key counterfactuals from the exhaustive audit:
+The counterfactual audit showed that the named features strongly influence these latest TOP-pool statistics. That is evidence of **influence**, not by itself evidence of **error**. A predictive top tail is allowed to differ from the fair population.
 
-- without `previous_draw_overlap`, mean previous overlap fell by about 1.02;
-- without `consecutive_pairs`, the TOP-1000 gained about 1.50 consecutive pairs per combination;
-- without `number_range`, mean range rose by about 10.8–11.0, almost exactly to the fair reference.
+## Why the provisional CLEAN3 promotion was withdrawn
 
-The old full model was therefore using those features to impose strong structural concentration despite no established individual OOS benefit.
-
-## Production decision
-
-The current personal-use model is CLEAN3:
+An earlier repository state promoted a reduced model that jointly removed:
 
 ```text
-disabled =
-  previous_draw_overlap
-  consecutive_pairs
-  number_range
+previous_draw_overlap
+consecutive_pairs
+number_range
 ```
 
-The model is **retrained on the remaining eight feature columns**. This is not a cosmetic post-hoc subtraction from final scores.
+That step was too early for two reasons:
 
-`number_full_log_lift` remains active. It can still concentrate the latest TOP pool, but among the four focused terms it showed the most consistent historical positive direction, so concentration alone is not used as a reason to delete it.
+1. every focused single-feature result above was statistically inconclusive;
+2. the three-feature reduced model had not been jointly evaluated before being labeled the current model.
 
-## Limits of the decision
+Therefore CLEAN3 is now only:
 
-- CLEAN3 is not claimed to prove increased jackpot probability.
-- The full-11 historical mean remained below the fair median.
-- This cleanup removes demonstrated unsupported structural forcing while preserving the personal raw-ranking research path.
-- Future completed draws should be appended and tracked without silently retuning the model after every result.
+```text
+experimental_candidate_requires_joint_and_stability_audit
+```
+
+The implementation still retrains the reduced ridge system correctly; the withdrawal concerns model-selection evidence, not the subset linear algebra.
+
+## Additional issue found in repository-wide review
+
+The current fair-null transform uses only 1,024 sampled fair combinations per target while final ranking evaluates 8,145,060 combinations. Extreme values can therefore saturate at `z=-1/+1`, creating score plateaus. The previous TOP-1000 distribution was also ordered with a seed-dependent hash tie-break.
+
+Because of this, latest-pool concentration must be reinterpreted only after:
+
+- reference seed/size stability audit;
+- `z` saturation diagnostics;
+- fixed RNG-free tie handling;
+- TOP cutoff tie multiplicity checks.
+
+The shared v3.1 core now uses fixed combination ordering for exact score ties. Existing FULL11/CLEAN3 sample-based fair-null representations remain available as explicit scenarios so old results can still be reproduced conceptually while the representation is audited.
+
+## Next decision rule
+
+Do not choose a feature subset because its TOP pool looks closer to random. Instead:
+
+1. stabilize the fair-null representation numerically;
+2. audit all 11 features, not only four;
+3. audit correlated groups such as long-run number/pair and recent20/recent100;
+4. inspect ridge condition/coefficient stability;
+5. only then decide which feature set, if any, is frozen for future independent draws.
