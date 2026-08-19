@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -9,7 +10,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lotto_engine.loader import LottoDataError
-from lotto_engine.v31_final_portfolio import generate_recommendations, write_json
+from lotto_engine.v31_scenario_recommendation import (
+    SCENARIO_SPECS,
+    generate_scenario_recommendations,
+)
 
 
 def _print_items(title: str, items: list[dict], portfolio: bool = False) -> None:
@@ -17,12 +21,12 @@ def _print_items(title: str, items: list[dict], portfolio: bool = False) -> None
     print("-" * 100)
     for item in items:
         rank = item.get("portfolio_rank") if portfolio else item.get("rank")
-        nums = " ".join(str(n) for n in item["numbers"])
+        nums = " ".join(str(number) for number in item["numbers"])
         suffix = ""
         if portfolio:
             suffix = f" raw_pool_rank={item['raw_rank_within_retained_pool']}"
         print(f"#{rank}  {nums}{suffix}")
-        print(f"model_score={item['model_score']:.12f} type={item['pattern_type']}")
+        print(f"model_score={item['model_score']:.12f}")
         active_terms = [
             term for term in item["feature_contributions"] if term.get("active", True)
         ]
@@ -34,63 +38,46 @@ def _print_items(title: str, items: list[dict], portfolio: bool = False) -> None
         print()
 
 
-def _print_audit(label: str, audit: dict) -> None:
-    if not audit:
-        return
-    rates = audit["number_inclusion_rates"]
-    most = sorted(rates.items(), key=lambda kv: kv[1], reverse=True)[:8]
-    fair = audit.get("fair_references", {})
-    print(f"{label}: {audit['pool_size']}")
-    print(
-        f"mean sum={audit['mean_sum']:.3f} "
-        f"(fair={fair.get('expected_sum', float('nan')):.3f}) "
-        f"range=[{audit['min_sum']}, {audit['max_sum']}]"
-    )
-    print(
-        f"mean odd count={audit['mean_odd_count']:.3f} "
-        f"(fair={fair.get('expected_odd_count', float('nan')):.3f})"
-    )
-    print(
-        f"mean number range={audit['mean_number_range']:.3f} "
-        f"(fair={fair.get('expected_number_range', float('nan')):.3f})"
-    )
-    print(
-        f"mean consecutive pairs={audit['mean_consecutive_pairs']:.3f} "
-        f"(fair={fair.get('expected_consecutive_pairs', float('nan')):.3f})"
-    )
-    if "mean_previous_draw_overlap" in audit:
-        print(
-            f"mean previous-draw overlap={audit['mean_previous_draw_overlap']:.3f} "
-            f"(fair={fair.get('expected_previous_draw_overlap', float('nan')):.3f}); "
-            f"any={audit['any_previous_draw_overlap_rate']:.3f} "
-            f"(fair={fair.get('any_previous_draw_overlap_rate', float('nan')):.3f})"
-        )
-    print(
-        "zone slot rates: "
-        + ", ".join(f"{key}={value:.4f}" for key, value in audit["zone_slot_rates"].items())
-    )
-    print("most frequent numbers: " + ", ".join(f"{n}:{rate:.3f}" for n, rate in most))
-    print()
+def _write_json(payload: dict, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    return output_path.resolve()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Current personal CLEAN3 fair-null reverse-ranking recommendation"
+        description=(
+            "v3.1 experimental recommendation scenarios. No scenario is currently promoted; "
+            "choose the calculation explicitly."
+        )
+    )
+    parser.add_argument(
+        "--scenario",
+        choices=sorted(SCENARIO_SPECS),
+        required=True,
+        help="full11=historical baseline, clean3=unpromoted joint-ablation candidate",
     )
     parser.add_argument("--sampled", action="store_true")
     parser.add_argument("--candidate-count", type=int, default=20_000)
     parser.add_argument("--top-k", type=int, default=10)
-    parser.add_argument("--seed-offset", type=int, default=0)
+    parser.add_argument(
+        "--seed-offset",
+        type=int,
+        default=0,
+        help="affects sampled candidate generation only; exhaustive tie ordering is RNG-free",
+    )
     parser.add_argument("--progress-every", type=int, default=1_000_000)
     parser.add_argument(
         "--output-json",
         type=Path,
-        default=Path("data/cache/v31_final_personal.json"),
+        default=Path("data/cache/v31_experimental_scenario.json"),
     )
     args = parser.parse_args()
 
     try:
-        payload = generate_recommendations(
+        payload = generate_scenario_recommendations(
+            scenario=args.scenario,
             exhaustive=not args.sampled,
             candidate_count=args.candidate_count,
             top_k=args.top_k,
@@ -98,58 +85,59 @@ def main() -> None:
             progress_every=args.progress_every,
         )
     except (LottoDataError, ValueError, RuntimeError) as exc:
-        print(f"추천 실패: {exc}")
+        print(f"계산 실패: {exc}")
         raise SystemExit(1) from exc
 
     meta = payload["meta"]
     print("=" * 100)
-    print("LOTTO STAT ENGINE v3.1 CLEAN3 - PERSONAL FAIR-NULL REVERSE RANKING")
+    print("LOTTO STAT ENGINE v3.1 - EXPERIMENTAL SCENARIO CALCULATION")
+    print("NO v3.1 SCENARIO IS CURRENTLY PROMOTED")
     print("=" * 100)
+    print(f"scenario: {meta['scenario']}")
     print(f"model: {meta['model_version']}")
+    print(f"status: {meta['model_status']}")
+    print(f"model spec sha256: {meta['model_spec']['sha256']}")
     print(f"latest reflected draw: {meta['latest_draw']}")
     print(f"target draw: {meta['target_draw']}")
     print(f"data: rows={meta['data']['rows']} sha256={meta['data']['sha256'][:16]}...")
     print(f"evaluation mode: {meta['evaluation_mode']}")
     print(f"evaluated combinations: {meta['evaluated_count']:,}")
-    print(f"formula: {meta['formula']}")
+    print(f"tie policy: {meta['tie_policy']}")
     print("active features: " + ", ".join(meta["active_feature_names"]))
-    print("disabled after component audit: " + ", ".join(meta["disabled_feature_names"]))
-    print("pattern type is metadata only; no pattern quota; all valid 6/45 combinations remain eligible")
+    print(
+        "distribution diagnostics are descriptive only; distance from fair does not delete or penalize a feature"
+    )
     print()
 
-    _print_items("RAW MODEL TOP-K (CLEAN3 score order unchanged)", payload["recommendations"])
+    _print_items("RAW MODEL TOP-K", payload["recommendations"])
 
     portfolio_meta = meta["portfolio"]
     print(
-        "PORTFOLIO RULE: raw-score order, pairwise shared numbers <= "
+        "STRICT PORTFOLIO: pairwise shared numbers <= "
         f"{portfolio_meta['max_shared_numbers']}, each number <= "
         f"{portfolio_meta['max_number_ticket_count']}/{portfolio_meta['requested_count']} tickets; "
-        "model score is never modified"
+        "no fallback relaxation"
     )
     print(
-        "fair references: P(two 6/45 tickets share >=3 numbers)="
-        f"{portfolio_meta['fair_random_pair_overlap_ge_3_rate']:.4%}; "
-        "P(a fixed number exceeds exposure cap in independent fair tickets)="
-        f"{portfolio_meta['fair_random_fixed_number_exceeds_exposure_cap_rate']:.4%}"
-    )
-    print(
-        f"portfolio source pool={portfolio_meta['source_pool_size']:,}; "
         f"complete={portfolio_meta['complete']} "
-        f"selected={portfolio_meta['selected_count']}/{portfolio_meta['requested_count']} "
-        f"fallback_relaxed={portfolio_meta['fallback_relaxed']}"
+        f"selected={portfolio_meta['selected_count']}/{portfolio_meta['requested_count']}"
     )
     print()
-    _print_items(
-        "STRICT DIVERSIFIED PORTFOLIO TOP-K",
-        payload["portfolio_recommendations"],
-        portfolio=True,
-    )
+    _print_items("STRICT DIVERSIFIED PORTFOLIO", payload["portfolio_recommendations"], portfolio=True)
 
-    _print_audit("bias audit raw TOP pool", payload.get("bias_audit_top_pool", {}))
-    _print_audit("portfolio audit", payload.get("portfolio_bias_audit", {}))
+    tie = payload.get("tie_diagnostics", {})
+    if tie:
+        print("TIE DIAGNOSTICS")
+        print("-" * 100)
+        print(
+            f"raw top-k cutoff score={tie['raw_top_k_cutoff_score']:.12f}; "
+            f"equal cutoff within retained pool={tie['equal_cutoff_score_count_within_retained_pool']}; "
+            f"top-k duplicate scores={tie['exact_score_duplicate_count_inside_raw_top_k']}"
+        )
+        print()
 
-    saved = write_json(payload, args.output_json)
-    print(f"personal JSON saved: {saved}")
+    saved = _write_json(payload, args.output_json)
+    print(f"scenario JSON saved: {saved}")
 
 
 if __name__ == "__main__":
