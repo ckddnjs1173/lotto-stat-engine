@@ -25,6 +25,13 @@ CLEAN3_REMOVED_FEATURES = (
     "consecutive_pairs",
 )
 
+FROZEN7_REMOVED_FEATURES = (
+    "pair_full_log_lift",
+    "pair_recent100_excess",
+    "sum_signed_center_138",
+    "odd_count_signed_center_3",
+)
+
 
 @dataclass(frozen=True)
 class V31ModelSpec:
@@ -58,6 +65,15 @@ class V31ModelSpec:
         return hashlib.sha256(encoded).hexdigest()
 
 
+@dataclass(frozen=True)
+class V31FrozenModelSpec(V31ModelSpec):
+    structural_null_policy: str = "exact_whole_universe_midrank_for_structural_features"
+    reference_stream_delta: int = 0
+    negative_sampling_policy: str = "nested_count_independent_deterministic_unique_fair_stream"
+    negative_stream_delta: int = 0
+    validation_status: str = "post_selection_exploratory_not_proven_edge"
+
+
 FULL11_BASELINE_SPEC = V31ModelSpec(
     name="v31_full11_experimental_baseline_v2",
     status="experimental_baseline_not_promoted",
@@ -72,6 +88,19 @@ CLEAN3_CANDIDATE_SPEC = V31ModelSpec(
     active_features=tuple(
         name for name in BASE_FEATURE_NAMES if name not in CLEAN3_REMOVED_FEATURES
     ),
+)
+
+FROZEN7_SPEC = V31FrozenModelSpec(
+    name="v31_frozen7_exact4096_neg256_v1",
+    status="frozen_personal_model_promoted_after_v31_audits",
+    feature_names=BASE_FEATURE_NAMES,
+    active_features=tuple(
+        name for name in BASE_FEATURE_NAMES if name not in FROZEN7_REMOVED_FEATURES
+    ),
+    train_negatives_per_target=256,
+    fair_reference_samples_per_target=4096,
+    reference_policy="nested_deterministic_fair_sample_empirical_midrank_stream0",
+    training_objective="pairwise_actual_minus_nested_fair_negative_ridge",
 )
 
 
