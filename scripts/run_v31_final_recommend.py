@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -10,6 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lotto_engine.loader import LottoDataError
+from lotto_engine.v31_audit_utils import runtime_identity, write_json
 from lotto_engine.v31_scenario_recommendation import (
     SCENARIO_SPECS,
     generate_scenario_recommendations,
@@ -36,13 +36,6 @@ def _print_items(title: str, items: list[dict], portfolio: bool = False) -> None
                 f"weight={term['weight']:.12f} bounded={term['bounded_value']:.12f}"
             )
         print()
-
-
-def _write_json(payload: dict, output_path: Path) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-    return output_path.resolve()
 
 
 def main() -> None:
@@ -88,6 +81,7 @@ def main() -> None:
         print(f"계산 실패: {exc}")
         raise SystemExit(1) from exc
 
+    payload["meta"]["runtime"] = runtime_identity()
     meta = payload["meta"]
     print("=" * 100)
     print("LOTTO STAT ENGINE v3.1 - EXPERIMENTAL SCENARIO CALCULATION")
@@ -100,6 +94,10 @@ def main() -> None:
     print(f"latest reflected draw: {meta['latest_draw']}")
     print(f"target draw: {meta['target_draw']}")
     print(f"data: rows={meta['data']['rows']} sha256={meta['data']['sha256'][:16]}...")
+    print(
+        f"runtime: python={meta['runtime']['python']} numpy={meta['runtime']['numpy']} "
+        f"platform={meta['runtime']['platform']}"
+    )
     print(f"evaluation mode: {meta['evaluation_mode']}")
     print(f"evaluated combinations: {meta['evaluated_count']:,}")
     print(f"tie policy: {meta['tie_policy']}")
@@ -136,7 +134,7 @@ def main() -> None:
         )
         print()
 
-    saved = _write_json(payload, args.output_json)
+    saved = write_json(payload, args.output_json)
     print(f"scenario JSON saved: {saved}")
 
 
