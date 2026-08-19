@@ -1,7 +1,9 @@
-"""Stable recommendation command.
+"""Stable v3.1 experimental scenario command.
 
 Historical versioned runners remain in ``scripts/`` for reproducibility.
-This unversioned command always delegates to the current personal model.
+This unversioned command delegates to the v3.1 scenario runner, which requires
+an explicit ``--scenario full11`` or ``--scenario clean3`` selection because no
+v3.1 scenario is currently promoted.
 """
 
 from __future__ import annotations
