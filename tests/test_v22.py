@@ -2,13 +2,17 @@ import math
 import unittest
 
 from lotto_engine.candidates import iter_all_combinations
-from lotto_engine.config import BASE_WEIGHTS
+from lotto_engine.config import BASE_WEIGHTS, LOTTO_XLSX_PATH
 from lotto_engine.features import extract_features, pattern_type
 from lotto_engine.loader import load_lotto_data
 from lotto_engine.profiles import build_profile
 from lotto_engine.scoring import SCORE_WEIGHTS, score_candidate
 
 
+@unittest.skipUnless(
+    LOTTO_XLSX_PATH.exists(),
+    "legacy v2.2 integration tests require local data/lotto.xlsx",
+)
 class MixedStructureV22Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
