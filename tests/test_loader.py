@@ -33,6 +33,24 @@ class LoaderValidationTests(unittest.TestCase):
         with self.assertRaises(LottoDataError):
             validate_lotto_data(_frame([2, 3]))
 
+    def test_fractional_round_is_rejected_instead_of_truncated(self):
+        df = _frame([1, 2, 3]).astype(float)
+        df.loc[1, ROUND_COLUMN] = 2.5
+        with self.assertRaises(LottoDataError):
+            validate_lotto_data(df)
+
+    def test_fractional_winning_number_is_rejected_instead_of_truncated(self):
+        df = _frame([1, 2, 3]).astype(float)
+        df.loc[1, NUMBER_COLUMNS[0]] = 12.5
+        with self.assertRaises(LottoDataError):
+            validate_lotto_data(df)
+
+    def test_non_finite_winning_number_is_rejected(self):
+        df = _frame([1, 2, 3]).astype(float)
+        df.loc[1, NUMBER_COLUMNS[0]] = float("nan")
+        with self.assertRaises(LottoDataError):
+            validate_lotto_data(df)
+
     def test_fingerprint_is_stable_for_same_normalized_history(self):
         df = _frame([1, 2, 3])
         left = dataset_fingerprint(df)
