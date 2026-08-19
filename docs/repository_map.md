@@ -1,74 +1,132 @@
 # Repository map
 
-The repository contains several generations of research. This file separates the **current personal calculation path** from historical experiments.
+The repository contains several generations of lottery-ranking research. No v3.1 scenario is currently promoted as the final personal model.
 
-## Current personal-use path
+## Stable entry points
 
-These files define what `python main.py` and `python scripts/run_recommend.py` execute:
+These commands now require an explicit v3.1 scenario:
 
-- `lotto_engine/loader.py` — strict local draw-history loading, validation, and data fingerprint
-- `lotto_engine/candidates.py` — deterministic samples and exhaustive 6/45 iterator
-- `lotto_engine/v31_clean3_recommendation.py` — current CLEAN3 fair-null additive reverse-ridge model
-- `lotto_engine/v31_final_portfolio.py` — strict downstream ticket diversification
-- `scripts/run_v31_final_recommend.py` — canonical runner
-- `scripts/run_recommend.py` — stable alias to the canonical runner
-- `main.py` — stable root alias to the canonical runner
-- `streamlit_app.py` — old web calculation disabled; CLI guidance only
+```powershell
+python main.py --scenario full11
+python main.py --scenario clean3
 
-If the stable entry points disagree, that is a repository bug.
+python scripts\run_recommend.py --scenario full11
+python scripts\run_recommend.py --scenario clean3
+```
 
-## Current diagnostics
+`main.py` and `scripts/run_recommend.py` both delegate to `scripts/run_v31_final_recommend.py`. The runner refuses to silently choose a scenario.
+
+## Shared v3.1 calculation core
+
+- `lotto_engine/v31_model_spec.py`
+  - frozen FULL11 baseline and CLEAN3 candidate specs
+  - priors, windows, ridge lambda, reference count, RNG offsets, tie policy
+  - canonical model-spec SHA-256
+- `lotto_engine/v31_core.py`
+  - history state
+  - number/pair evidence context
+  - 11 raw features
+  - sampled fair-null midrank transform
+  - pairwise ridge sufficient statistics and fitting
+  - fixed RNG-free combination tie key
+  - latest model fitting
+- `lotto_engine/v31_scenario_recommendation.py`
+  - explicit FULL11/CLEAN3 scenario ranking
+  - full/sampled candidate enumeration
+  - tie and distribution diagnostics
+  - strict downstream portfolio
+- `lotto_engine/strict_portfolio.py`
+  - pairwise overlap and per-number exposure constraints
+  - no raw score modification and no fallback relaxation
+- `lotto_engine/loader.py`
+  - strict local history validation
+  - integer-only round/number parsing
+  - normalized data fingerprint
+- `lotto_engine/candidates.py`
+  - exhaustive `C(45,6)` iterator and deterministic sampled candidate generation
+
+## v3.1 scenarios
+
+### FULL11 baseline
+
+- `lotto_engine/v31_final_directional_recommendation.py`
+- status: `experimental_baseline_not_promoted`
+
+The historical filename is retained because component/joint audits import this module. Its mathematical primitives now route through `v31_core.py`.
+
+### CLEAN3 candidate
+
+- `lotto_engine/v31_clean3_recommendation.py`
+- status: `experimental_candidate_requires_joint_and_stability_audit`
+
+CLEAN3 removes `previous_draw_overlap`, `number_range`, and `consecutive_pairs` and solves the reduced ridge system. It is no longer the default/current model.
+
+`lotto_engine/v31_final_portfolio.py` is retained for compatibility with the former CLEAN3-specific execution path. The stable runner no longer uses it as the authoritative current model.
+
+## Current v3.1 diagnostics
+
+### Focused component audit
 
 - `lotto_engine/v31_component_influence_audit.py`
 - `scripts/run_v31_component_influence_audit.py`
 - `tests/test_v31_component_influence_audit.py`
 
-These reproduce the former full-11 component influence study that led to CLEAN3.
+This reproduces the four-feature focused FULL11 leave-one-out study.
+
+### Joint ablation audit
 
 - `lotto_engine/v31_joint_ablation_audit.py`
 - `scripts/run_v31_joint_ablation_audit.py`
 - `tests/test_v31_joint_ablation_audit.py`
 
-These are diagnostic comparisons of the former full-11 baseline against multi-feature ablations. They are **not** the default recommendation engine.
+This compares FULL11 with CLEAN3/CLEAN4 multi-feature removals. It is diagnostic, not a promotion gate by itself.
 
-`lotto_engine/v31_final_directional_recommendation.py` is retained as the full-11 representation/audit baseline used by those diagnostics; despite its historical filename, it is no longer the stable personal-use entry point.
+### Reference stability audit
+
+- `lotto_engine/v31_reference_stability_audit.py`
+- `scripts/run_v31_reference_stability_audit.py`
+- `tests/test_v31_reference_stability_audit.py`
+
+This holds fitted weights fixed and perturbs/enlarges only the latest fair reference. It measures score correlation, rank correlation, TOP-10/100/1000 Jaccard, exact-score duplication, and feature saturation. It must not be used to pick whichever reference count happens to score historical winners best.
+
+### Exact structural nulls
+
+- `lotto_engine/v31_exact_structural_null.py`
+- `tests/test_v31_exact_structural_null.py`
+
+Exact whole-universe fair-null distributions are available for overlap, sum, high-minus-low zones, odd count, range, and consecutive-pair count. These exact coordinates are not yet wired into FULL11/CLEAN3; they are a separately audited representation change.
 
 ## Historical research retained for reproducibility
 
-The following families remain intentionally versioned and are not imported by the stable recommendation entry points:
+The following families remain intentionally versioned:
 
-- legacy structural scoring: `scoring.py`, `recommender.py`, `mixed_scoring.py`, `mixed_subtypes.py`, `backtest.py`, `mixed_backtest.py`, `weights.py`
+- legacy structural scoring: `features.py`, `profiles.py`, `scoring.py`, `recommender.py`, `mixed_scoring.py`, `mixed_subtypes.py`, `backtest.py`, `mixed_backtest.py`, `weights.py`
 - v2.7 validation/release research: `v27_*`, `v271_*`
 - v2.8 linear reverse ranking: `v28_reverse_ranking.py`
 - v2.9 quadratic reverse ranking: `v29_*`
 - v3.0 null-bounded quadratic research: `v30_*`
 
-Their matching runners and tests are kept so historical findings can be reproduced and old assumptions cannot silently disappear from the record.
+The stable v3.1 scenario path no longer depends on private functions from the v27/v28 research modules for its ranking mathematics. Historical audit files can still retain old dependencies when required for reproducibility.
 
-## Historical result documents
+## Current documents
 
-`docs/` contains specifications/results that motivated each transition. Older documents describe the version named in their filename, not the current model.
-
-For current state, read:
+Read these for the current audit state:
 
 1. `README.md`
 2. `docs/v31_component_influence_result.md`
-3. `docs/v31_final_formula.md`
+3. `docs/v31_final_formula.md` — despite the filename, now records that final status is withdrawn
+4. this repository map
 
-## What not to do
+Older result documents describe the specific historical model version named in their filename.
 
-Do not use an old versioned runner as the normal next-draw command simply because it is still present. In particular, v2.7/v2.8/v2.9/v3.0 scripts are research artifacts.
+## Current workflow
 
-Use:
+Before any new model promotion:
 
-```powershell
-python main.py
-```
-
-or:
-
-```powershell
-python scripts\run_recommend.py
-```
-
-for the current calculation.
+1. run all unit tests;
+2. validate local draw data;
+3. run reference stability audit;
+4. inspect saturation/tie diagnostics;
+5. run full feature/group ablations;
+6. inspect ridge coefficient/condition stability;
+7. only then freeze a scenario for future independent draws.
