@@ -47,6 +47,21 @@ class StrictPortfolioRepairTests(unittest.TestCase):
         self.assertTrue(meta["actual_denominator_exposure_check"])
         self.assertTrue(meta["exposure_constraint_satisfied"])
 
+    def test_denominator_invalid_partial_greedy_is_not_returned(self):
+        ranked = [
+            self._entry(10, (1, 2, 3, 4, 5, 6)),
+            self._entry(9, (7, 8, 9, 10, 11, 12)),
+        ]
+        selected, meta = select_strict_portfolio_entries(
+            ranked,
+            top_k=3,
+            max_shared_numbers=2,
+            max_number_exposure_rate=0.4,
+        )
+        self.assertEqual(selected, [])
+        self.assertTrue(meta["no_feasible_strict_size_found"])
+        self.assertTrue(meta["exposure_constraint_satisfied"])
+
     def test_complete_result_keeps_raw_rank_order_and_constraints(self):
         ranked = [
             self._entry(10 - index, tuple(range(1 + index * 6, 7 + index * 6)))
