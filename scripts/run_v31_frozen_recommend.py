@@ -98,15 +98,18 @@ def main() -> None:
     _print_items("RAW MODEL TOP-K", payload["recommendations"])
 
     portfolio_meta = meta["portfolio"]
+    actual_denominator = portfolio_meta["selected_count"]
     print(
         "STRICT PORTFOLIO: pairwise shared numbers <= "
         f"{portfolio_meta['max_shared_numbers']}, each number <= "
-        f"{portfolio_meta['max_number_ticket_count']}/{portfolio_meta['requested_count']} tickets; "
+        f"{portfolio_meta['max_number_ticket_count']}/{actual_denominator} actual tickets; "
         "no fallback relaxation"
     )
     print(
         f"complete={portfolio_meta['complete']} "
-        f"selected={portfolio_meta['selected_count']}/{portfolio_meta['requested_count']}"
+        f"selected={portfolio_meta['selected_count']}/{portfolio_meta['requested_count']} "
+        f"repair_used={portfolio_meta.get('repair_used', False)} "
+        f"observed_max_exposure={portfolio_meta.get('observed_max_number_exposure_rate', 0.0):.4f}"
     )
     print()
     _print_items("STRICT DIVERSIFIED PORTFOLIO", payload["portfolio_recommendations"], portfolio=True)
