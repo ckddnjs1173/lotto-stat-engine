@@ -212,8 +212,8 @@ def select_strict_portfolio_entries(
     selection cannot fill the request, a bounded deterministic repair search replaces
     a minimum number of greedy choices and refills from the same raw-ranked source
     pool. If the requested size still cannot be completed, smaller sizes are searched
-    again using *their own* exposure cap, so an incomplete returned portfolio can
-    never claim a 40% cap that was calculated using a larger requested denominator.
+    again using *their own* exposure cap. A partial greedy set is never returned just
+    because a larger denominator would have made its exposure look acceptable.
     """
     top_k = int(top_k)
     if top_k <= 0:
@@ -242,7 +242,6 @@ def select_strict_portfolio_entries(
         "repair_attempt_limit_reached": False,
     }
     selected_target = 0
-    selected_cap = 0
 
     max_target = min(top_k, len(ranked))
     for target_count in range(max_target, 0, -1):
@@ -262,14 +261,7 @@ def select_strict_portfolio_entries(
             selected_indices = indices[:target_count]
             search_meta = current_meta
             selected_target = target_count
-            selected_cap = exposure_cap
             break
-        # Preserve the requested-size diagnostics when nothing smaller succeeds yet.
-        if target_count == max_target:
-            selected_indices = indices
-            search_meta = current_meta
-            selected_target = len(indices)
-            selected_cap = _exposure_cap(selected_target, max_number_exposure_rate)
 
     selected = [ranked[index] for index in sorted(selected_indices)]
     observed = _observed_portfolio_metrics(selected)
@@ -286,6 +278,7 @@ def select_strict_portfolio_entries(
         "selected_count": actual_count,
         "requested_count": top_k,
         "selected_target_count": int(selected_target),
+        "no_feasible_strict_size_found": actual_count == 0,
         "max_shared_numbers": max_shared_numbers,
         "max_number_exposure_rate": max_number_exposure_rate,
         "requested_max_number_ticket_count": requested_cap,
