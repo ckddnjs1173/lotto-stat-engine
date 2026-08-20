@@ -10,34 +10,25 @@ from lotto_engine.loader import LottoDataError, load_lotto_data
 
 
 def main() -> None:
-    print("WALK-FORWARD ACTUAL-VS-RANDOM BACKTEST")
+    print("v2.2 WALK-FORWARD ACTUAL-VS-RANDOM BACKTEST")
     try:
-        df = load_lotto_data()
-        payload = run_walk_forward_backtest(df)
+        payload = run_walk_forward_backtest(load_lotto_data())
     except (LottoDataError, ValueError) as exc:
         print(f"백테스트 실패: {exc}")
         raise SystemExit(1)
-
+    print(payload["score_disclaimer"])
     print(f"테스트 수: {payload['total_tests']}")
-    print(f"회차별 랜덤 기준선 샘플 수: {payload['baseline_samples']}")
-    print()
-    print("Feature 평균 구조 점수:")
-    for key, value in payload["feature_scores"].items():
-        print(f"{key}: {value:.4f}")
-    print()
-    print("Actual-vs-random percentile:")
-    for key, value in payload["percentile_scores"].items():
+    print(f"prediction_score percentile: {payload['prediction_percentile']:.4f}%")
+    print("\nComponent percentiles:")
+    for key, value in payload["component_percentiles"].items():
         print(f"{key}: {value:.4f}%")
-    print()
-    print("Stability:")
-    for key, value in payload["stability_scores"].items():
-        print(f"{key}: {value:.4f}")
-    print()
-    print("Final weights:")
-    for key, value in payload["final_weights"].items():
-        print(f"{key}: {value:.6f}")
-    print()
-    print("가중치 저장 완료: data/cache/feature_weights.json")
+    for window, values in payload["stability_windows"].items():
+        print(f"\nRecent {window} stability:")
+        for key, summary in values.items():
+            print(
+                f"{key}: mean={summary['mean_percentile']:.4f}%, "
+                f"std={summary['percentile_std']:.4f}, stability={summary['stability']:.4f}"
+            )
 
 
 if __name__ == "__main__":

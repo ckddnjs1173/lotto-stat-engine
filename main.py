@@ -1,10 +1,10 @@
-from lotto_engine.config import DEFAULT_CANDIDATE_COUNT
-from lotto_engine.recommender import generate_recommendations, print_recommendations
+"""Stable CLI entry point for the frozen v3.1 personal model.
 
+Historical experimental FULL11/CLEAN3 runners remain available for reproducibility,
+but the unversioned stable entry point now delegates to the immutable frozen model.
+"""
 
-def main() -> None:
-    payload = generate_recommendations(seed_offset=0, candidate_count=DEFAULT_CANDIDATE_COUNT)
-    print_recommendations(payload)
+from scripts.run_v31_frozen_recommend import main
 
 
 if __name__ == "__main__":
