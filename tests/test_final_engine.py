@@ -13,9 +13,11 @@ from lotto_engine.mixed_subtypes import (
 from lotto_engine.recommender import (
     PATTERN_TYPES,
     _flatten_type_heaps,
+    _portfolio_allocation,
     _push_type_candidate,
     _type_pool_sizes,
 )
+from lotto_engine.scoring import FINAL_STATIC_WEIGHTS
 
 
 def record(draw, pattern, family, coarse=None):
@@ -137,10 +139,30 @@ class FinalDynamicModelTests(unittest.TestCase):
         self.assertEqual(retained_counts["mixed"], 20)
         self.assertEqual(retained_counts["outlier"], pool_sizes["outlier"])
 
-    def test_zero_target_type_still_keeps_soft_reserve(self):
+    def test_zero_target_type_still_keeps_diagnostic_reserve(self):
         pool_sizes = _type_pool_sizes({"normal": 0, "mixed": 10, "outlier": 0}, 10)
         self.assertGreater(pool_sizes["normal"], 0)
         self.assertGreater(pool_sizes["outlier"], 0)
+
+    def test_static_final_weights_exclude_type_and_transition_signals(self):
+        for candidate_type, weights in FINAL_STATIC_WEIGHTS.items():
+            self.assertAlmostEqual(sum(weights.values()), 1.0)
+            self.assertNotIn("type_balance_score", weights)
+            self.assertNotIn("transition_score", weights)
+            self.assertNotIn("number_dynamics_score", weights)
+            self.assertIn(candidate_type, {"normal", "outlier"})
+
+    def test_dynamic_type_budget_is_exact(self):
+        profile = {
+            "latest_pattern_type": "outlier",
+            "transition_probs": {
+                "outlier": {"normal": 0.21, "mixed": 0.51, "outlier": 0.28}
+            },
+            "pattern_type_probs": {"normal": 0.2, "mixed": 0.55, "outlier": 0.25},
+        }
+        allocation = _portfolio_allocation(profile, 10)
+        self.assertEqual(sum(allocation.values()), 10)
+        self.assertEqual(allocation, {"normal": 2, "mixed": 5, "outlier": 3})
 
     def test_exhaustive_iterator_count_is_exact(self):
         self.assertEqual(sum(1 for _ in iter_all_combinations()), 8_145_060)
