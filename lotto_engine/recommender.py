@@ -144,17 +144,23 @@ def _select_diverse_static(pool: list[dict], quota: int) -> list[dict]:
 
 
 def _mixed_diagnostics(items: list[dict], family_allocation: dict[str, int] | None = None) -> dict:
-    """Summarize mixed selections for both production and legacy callers.
+    """Summarize mixed selections for production and legacy mixed-only callers.
 
-    Production passes the full 10-ticket portfolio, while older regression tests
-    pass the already-selected mixed-only list.  When every item is mixed, use the
-    list as-is; otherwise filter the full portfolio down to actual mixed items.
+    The legacy v2.3 tests pass a list produced directly by `_select_diverse_mixed`.
+    Some synthetic candidates in those tests are not themselves classified as
+    `pattern_type == "mixed"`; the fact that the caller passed a mixed-selection
+    list is therefore more reliable than reclassifying those synthetic fixtures.
+
+    Production always passes the full final portfolio together with a non-empty
+    mixed-family allocation whenever mixed slots exist. In that case we filter
+    strictly to actual mixed candidates.
     """
-    if items and all(item.get("pattern_type") == "mixed" for item in items):
+    if family_allocation is None:
         mixed_items = list(items)
     else:
         mixed_items = [item for item in items if item.get("pattern_type") == "mixed"]
 
+    family_allocation = family_allocation or {}
     pairs = list(combinations(mixed_items, 2))
     overlaps = [len(set(a["numbers"]) & set(b["numbers"])) for a, b in pairs]
     frequencies = Counter(number for item in mixed_items for number in item["numbers"])
@@ -169,7 +175,7 @@ def _mixed_diagnostics(items: list[dict], family_allocation: dict[str, int] | No
         "mixed_diversity_penalty_applied": any(i.get("mixed_diversity_penalty", 0) > 0 for i in mixed_items),
         "unique_primary_subtype_count": len({item["primary_subtype"] for item in mixed_items}),
         "unique_subtype_signature_count": len({item["subtype_signature"] for item in mixed_items}),
-        "family_allocation_target": dict(family_allocation or {}),
+        "family_allocation_target": dict(family_allocation),
         "family_allocation_selected": dict(selected_families),
     }
 
@@ -396,8 +402,8 @@ def generate_recommendations(
             "mixed_subtype_allocation_suggestion": suggest_mixed_subtype_allocation(subtype_records),
             "score_name": "within_type_score",
             "score_disclaimer": (
-                "점수는 실제 당첨확률이 아닙니다. 최신 회차까지의 데이터를 기반으로 한 "
-                "타입 내부 경험적 순위 점수이며 서로 다른 pattern_type 간 절대점수 비교에는 사용하지 않습니다."
+                "점수는 실제 당첨확률이 아닙니다. 최신 회차까지의 데이터를 기반으로 "
+                "각 pattern_type 내부에서 계산한 경험적 순위 점수입니다."
             ),
         },
         "weights": weights,
@@ -409,7 +415,7 @@ def generate_recommendations(
 def print_recommendations(payload: dict) -> None:
     meta = payload["meta"]
     print("=" * 72)
-    print("LOTTO STAT ENGINE FINAL - TYPE-SEPARATED RANKING")
+    print("LOTTO STAT ENGINE FINAL - TYPE-SEPARATED DYNAMIC PORTFOLIO")
     print("=" * 72)
     print(f"latest reflected draw: {meta['latest_draw']}")
     print(f"target draw: {meta['target_draw']}")
@@ -437,19 +443,21 @@ def print_recommendations(payload: dict) -> None:
         f = item["features"]
         nums = " ".join(str(n) for n in item["numbers"])
         print()
-        print(f"[{idx}] {item['strategy']} · type rank {item.get('type_rank', '-')}")
+        print(f"[{idx}] {item['strategy']}")
         print(nums)
         print(f"within_type_score: {item['within_type_score']}")
+        print(f"type_rank: {item['type_rank']}")
         print(f"pattern_type: {item['pattern_type']}")
         if item["pattern_type"] == "mixed":
             print(f"mixed_base_score: {item['base_score']}")
             print(f"transition_lift_score: {item['transition_lift_score']}")
             print(f"momentum_lift_score: {item['momentum_lift_score']}")
             print(f"selected_family: {item['selected_family']}")
+            print(f"mixed_portfolio_score: {item['portfolio_selection_score']}")
         else:
             print(f"static_score: {item['base_score']}")
             print(f"within_type_diversity_penalty: {item.get('within_type_diversity_penalty', 0.0)}")
-        print(f"portfolio_selection_score: {item.get('portfolio_selection_score', item['within_type_score'])}")
+            print(f"portfolio_selection_score: {item['portfolio_selection_score']}")
         print(f"primary_subtype: {item['primary_subtype']}")
         print(f"subtype_tags: {', '.join(item['subtype_tags']) or 'none'}")
         print(f"subtype_signature: {item['subtype_signature']}")
