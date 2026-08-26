@@ -184,19 +184,12 @@ def _top_k_stream(candidates, profile: dict, weights: dict[str, float], k: int) 
 
 
 def _portfolio_allocation(profile: dict, top_k: int) -> dict[str, int]:
-    """Convert next-type transition probabilities into an exact ticket budget."""
     probabilities = profile["transition_probs"].get(
         profile["latest_pattern_type"], profile["pattern_type_probs"]
     )
     raw = {key: top_k * probabilities.get(key, 0.0) for key in PATTERN_TYPES}
     allocation = {key: int(value) for key, value in raw.items()}
-    remainder = top_k - sum(allocation.values())
-    order = sorted(
-        PATTERN_TYPES,
-        key=lambda item: (raw[item] - allocation[item], probabilities.get(item, 0.0), item),
-        reverse=True,
-    )
-    for key in order[:remainder]:
+    for key in sorted(raw, key=lambda item: raw[item] - allocation[item], reverse=True)[:top_k - sum(allocation.values())]:
         allocation[key] += 1
     return allocation
 
@@ -390,13 +383,11 @@ def generate_recommendations(
             "portfolio_allocation": allocation,
             "portfolio_selected": dict(selected_counts),
             "mixed_diagnostics": _mixed_diagnostics(recommendations, family_allocation),
-            "mixed_subtype_allocation_suggestion": suggest_mixed_subtype_allocation(
-                subtype_records, slots=allocation.get("mixed", 0)
-            ),
+            "mixed_subtype_allocation_suggestion": suggest_mixed_subtype_allocation(subtype_records),
             "score_name": "within_type_score",
             "score_disclaimer": (
-                "점수는 실제 당첨확률이 아닙니다. Normal/Mixed/Outlier는 서로 다른 구조 모델로 "
-                "각 타입 내부에서 순위를 매기며, 최신 실제 전이확률은 10장 타입 예산에 반영됩니다."
+                "점수는 실제 당첨확률이 아닙니다. 최신 회차까지의 데이터로 계산한 "
+                "동일 pattern_type 내부 경험적 순위 점수입니다."
             ),
         },
         "weights": weights,
@@ -436,14 +427,12 @@ def print_recommendations(payload: dict) -> None:
         f = item["features"]
         nums = " ".join(str(n) for n in item["numbers"])
         print()
-        print(f"[{idx}] {item['strategy']} (type rank {item['type_rank']})")
+        print(f"[{idx}] {item['strategy']}")
         print(nums)
+        print(f"pattern_type: {item['pattern_type']}")
+        print(f"type_rank: {item.get('type_rank', '-')}")
         print(f"within_type_score: {item['within_type_score']}")
         print(f"base_score: {item['base_score']}")
-        print(f"pattern_type: {item['pattern_type']}")
-        print(f"primary_subtype: {item['primary_subtype']}")
-        print(f"subtype_tags: {', '.join(item['subtype_tags']) or 'none'}")
-        print(f"subtype_signature: {item['subtype_signature']}")
         if item["pattern_type"] == "mixed":
             print(f"transition_lift_score: {item['transition_lift_score']}")
             print(f"momentum_lift_score: {item['momentum_lift_score']}")
@@ -451,7 +440,9 @@ def print_recommendations(payload: dict) -> None:
             print(f"mixed_slot_score: {item['mixed_slot_score']:.4f}")
             print(f"extreme_count: {item['extreme_count']}")
             print(f"extreme_signature: {', '.join(item['extreme_signature'])}")
-        print(f"portfolio_selection_score: {item.get('portfolio_selection_score', item['within_type_score'])}")
+        print(f"primary_subtype: {item['primary_subtype']}")
+        print(f"subtype_tags: {', '.join(item['subtype_tags']) or 'none'}")
+        print(f"subtype_signature: {item['subtype_signature']}")
         print("score breakdown:")
         for key, value in item["score_breakdown"].items():
             print(f"  {key}: {value:.4f}")
