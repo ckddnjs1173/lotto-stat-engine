@@ -1,91 +1,132 @@
-# Lotto Stat Engine Final - Latest-Data Dynamic Structure
+# Lotto Stat Engine Final - Type-Separated Dynamic Portfolio
 
-This is the production 6/45 engine. `prediction_score` is an internal empirical
-ranking score, not an actual winning probability.
+This is the production 6/45 engine. The user adds the newest winning draw to
+`data/lotto.xlsx`; the engine automatically detects that draw, rebuilds the
+historical state through it, exhaustively evaluates all 8,145,060 valid
+combinations, and recommends exactly 10 combinations for `latest_draw + 1`.
 
-## Production workflow
+No draw number is hardcoded. Bonus numbers are not scored. There are no
+structural hard filters, popularity-avoidance rules, or aesthetic-number rules.
 
-1. Add the newest winning draw to `data/lotto.xlsx`.
-2. Run the engine; it automatically detects `latest_draw`.
-3. It rebuilds every historical structure, subtype, family, adjacent-transition,
-   and decay-momentum statistic through that draw.
-4. It exhaustively scores all 8,145,060 valid 6/45 combinations.
-5. It recommends exactly 10 combinations for `latest_draw + 1`.
+## Final architecture
 
-No draw number is hardcoded. The latest real draw is always the prediction
-state, and adding a valid row requires no source-code changes.
+The production engine deliberately separates three jobs that were previously
+mixed together.
 
-## Production score
+### 1. Next pattern-type budget
+
+The actual chronological normal/mixed/outlier transitions are estimated from
+historical `t -> t+1` pairs. The latest draw's pattern type determines the
+next-draw type distribution. That distribution is converted by largest remainder
+into an exact 10-ticket portfolio budget, for example:
 
 ```text
-prediction_score =
-0.70 * base_score
+normal 2
+mixed 5
+outlier 3
+```
+
+This transition evidence is not added again to normal/outlier candidate scores.
+It is used once, at the type-budget layer.
+
+### 2. Ranking inside each type
+
+Scores from different pattern types are not treated as if they were on one
+common probability scale.
+
+Normal and outlier candidates are ranked only against candidates of the same
+type using static structural evidence. The final static rank excludes type
+rarity, type-transition score, and hot/cold number dynamics so those signals are
+not double-counted.
+
+Mixed candidates keep the established empirical mixed model:
+
+```text
+mixed_base =
+0.35 * mixed_lift_score
++ 0.25 * mixed_interaction_score
++ 0.20 * normal_backbone_score
++ 0.15 * controlled_extreme_score
++ 0.05 * recency_consistency_score
+```
+
+For mixed candidates only, family dynamics remain active:
+
+```text
+mixed_within_type_score =
+0.70 * mixed_base
 + 0.15 * transition_lift_score
 + 0.15 * momentum_lift_score
 ```
 
-The base score preserves the established structural evidence: empirical and
-interaction lift, robust backbone, controlled extremes, and subtype/family
-structure.
+Transition evidence uses real adjacent draws with hierarchical shrinkage.
+Momentum uses exponential decay anchored at the global latest draw. Lift 1 is
+neutral at score 50.
 
-Transition evidence uses only real chronological `t -> t+1` pairs. Sparse rows
-are not trusted directly: target-family probabilities are hierarchically shrunk
-from the global family prior through pattern type and coarse family to the exact
-latest family. The current transition prior strength is a conservative research
-value, not a fitted winning-probability parameter.
+### 3. Portfolio construction
 
-Production momentum is anchored at the global latest draw and uses all draw
-types. Exponentially decayed recent family mass is shrunk toward the long-run
-family distribution before converting recent/long-run lift to the 0-100 score.
-A lift of 1 maps to the neutral score 50.
+All 8,145,060 combinations are still evaluated. Independent candidate pools are
+retained for normal, mixed, and outlier. After exhaustive scoring, the engine
+selects exactly the dynamically calculated number of tickets from each type.
 
-Type and mixed-family allocations are recomputed on every run and applied only
-as bounded portfolio preferences. Candidate retention is partitioned by pattern
-type so one high-scoring type cannot erase all other types before final portfolio
-selection. Every valid combination remains eligible; there are no structural
-hard filters, bonus-number scores, or aesthetic number rules.
+Within each type, bounded diversity penalties reduce redundant number/structure
+exposure. Within mixed, the v2.4/v2.5 subtype-family allocation also diversifies
+historically supported families.
 
-## Evidence policy
+The type budget is a portfolio policy after exhaustive evaluation, not a hard
+candidate filter. Every valid 6/45 combination remains eligible for evaluation.
 
-New statistical ideas are researched independently before they are allowed into
-the production score. A component is not promoted because it sounds plausible or
-because it matches the latest draw. Evaluation uses strict rolling-origin
-walk-forward tests: target draw `t` may use only draws `< t`.
+## Why the architecture is separated
 
-### Rejected: standalone number hot/cold frequency
+The previous implementation compared normal, mixed, and outlier scores globally
+even though mixed used a different structural formula. It also included type
+transition inside the base score and again in the dynamic/portfolio layers. This
+could make one pattern type dominate the final ten tickets despite a different
+dynamic allocation target.
 
-`number_bayes_evidence_v1` tested full-history and exponentially decayed Bayesian
-marginal number frequencies against the fair `6/45` null across 1,135 strict
-walk-forward targets. All predeclared variants produced negative Brier skill and
-worse log loss overall, in the most recent 300 targets, and in the most recent
-100 targets. Therefore standalone hot/cold or recent-number frequency is not a
-production feature.
+The final architecture removes that double counting:
 
-### Research: pair frequency / interaction
+```text
+latest historical data
+        -> next pattern-type budget
+        -> exhaustive candidate evaluation
+        -> within-type ranking
+        -> mixed family dynamics/allocation
+        -> type-budget portfolio selection
+        -> final 10 tickets
+```
 
-`pair_bayes_evidence_v1` tests all 990 unordered number pairs against the fair
-pair-inclusion probability `1/66`. It is research-only. Pair evidence must improve
-out-of-sample proper scores before any pair-derived component can be considered
-for production scoring.
+## Production workflow
 
-## Commands
+1. Add the newest winning draw to `data/lotto.xlsx`.
+2. Activate the project virtual environment.
+3. Run the tests.
+4. Run the recommendation engine.
+5. Confirm that `evaluated combination count` is `8145060` and that type
+   allocation target equals selected.
 
 ```powershell
+.\.venv\Scripts\Activate.ps1
 python -m unittest discover -s tests -v
 python scripts\validate_data.py
-python scripts\analyze_mixed_subtypes.py
-python scripts\run_mixed_backtest.py
-python scripts\run_number_evidence_backtest.py
-python scripts\run_pair_evidence_backtest.py
 python scripts\run_recommend.py
 ```
 
-Use a limited smoke run to verify output wiring without performing the full
-exhaustive production run:
+A limited smoke run can verify wiring before the exhaustive run:
 
 ```powershell
-python -c "from lotto_engine.recommender import generate_recommendations, print_recommendations; print_recommendations(generate_recommendations(exhaustive=False, candidate_count=10000))"
+python -c "from lotto_engine.recommender import generate_recommendations, print_recommendations; print_recommendations(generate_recommendations(exhaustive=False, candidate_count=100000))"
 ```
 
-Historical diagnostic scripts and the v2.2-v2.5 regression tests remain in the
-repository as supporting evidence; they are not separate production engines.
+## Evidence policy
+
+`prediction_score`/`within_type_score` are internal empirical ranking scores, not
+actual lottery winning probabilities.
+
+Standalone hot/cold marginal number frequency remains excluded from production
+because its strict walk-forward proper-score tests did not improve on the fair
+6/45 null. Pair-frequency evidence remains research-only until it demonstrates
+out-of-sample value.
+
+Historical v2.2-v2.5 tests and diagnostic scripts remain in the repository as
+regression/evidence history; they are not separate production engines.
