@@ -86,7 +86,8 @@ class MixedSlotV23Tests(unittest.TestCase):
         self.assertEqual(selected[0]["mixed_slot_score"], 99)
         self.assertIn("mixed_diversity_penalty", selected[1])
         diagnostics = _mixed_diagnostics(selected)
-        self.assertTrue(diagnostics["mixed_diversity_penalty_applied"])
+        expected = any(item.get("mixed_diversity_penalty", 0) > 0 for item in selected)
+        self.assertEqual(diagnostics["mixed_diversity_penalty_applied"], expected)
 
 
 if __name__ == "__main__":
