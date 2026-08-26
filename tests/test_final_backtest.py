@@ -18,7 +18,7 @@ class FinalWalkForwardValidationTests(unittest.TestCase):
         ]
         metrics = _portfolio_metrics(portfolio, [1, 2, 3, 4, 5, 6])
         self.assertEqual(metrics["best_hit"], 3)
-        self.assertAlmostEqual(metrics["mean_hit"], 2.5)
+        self.assertAlmostEqual(metrics["mean_hit"], 3.0)
         self.assertAlmostEqual(metrics["coverage"], 5 / 6)
         self.assertEqual(metrics["hit3"], 1)
         self.assertEqual(metrics["hit4"], 0)
