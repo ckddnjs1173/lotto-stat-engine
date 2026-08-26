@@ -144,17 +144,7 @@ def _select_diverse_static(pool: list[dict], quota: int) -> list[dict]:
 
 
 def _mixed_diagnostics(items: list[dict], family_allocation: dict[str, int] | None = None) -> dict:
-    """Summarize mixed selections for production and legacy mixed-only callers.
-
-    The legacy v2.3 tests pass a list produced directly by `_select_diverse_mixed`.
-    Some synthetic candidates in those tests are not themselves classified as
-    `pattern_type == "mixed"`; the fact that the caller passed a mixed-selection
-    list is therefore more reliable than reclassifying those synthetic fixtures.
-
-    Production always passes the full final portfolio together with a non-empty
-    mixed-family allocation whenever mixed slots exist. In that case we filter
-    strictly to actual mixed candidates.
-    """
+    """Summarize mixed selections for production and legacy mixed-only callers."""
     if family_allocation is None:
         mixed_items = list(items)
     else:
@@ -211,12 +201,7 @@ def _portfolio_allocation(profile: dict, top_k: int) -> dict[str, int]:
 
 
 def _type_pool_sizes(allocation: dict[str, int], k: int) -> dict[str, int]:
-    """Reserve type-specific pools during exhaustive scoring.
-
-    A zero-budget type still keeps a small diagnostic reserve, so no candidate is
-    pruned from evaluation. The final ticket count is controlled only after all
-    candidates have been scored.
-    """
+    """Reserve type-specific pools during exhaustive scoring."""
     return {
         candidate_type: max(k, max(1, allocation.get(candidate_type, 0)) * MIXED_POOL_MULTIPLIER)
         for candidate_type in PATTERN_TYPES
@@ -235,6 +220,39 @@ def _push_type_candidate(
         heapq.heappush(heap, entry)
     elif entry[0] > heap[0][0]:
         heapq.heapreplace(heap, entry)
+
+
+def _push_family_candidate(
+    heaps: dict[str, list[tuple[float, int, dict]]],
+    family_allocation: dict[str, int],
+    family: str,
+    entry: tuple[float, int, dict],
+    k: int,
+) -> None:
+    """Keep high-quality exact-family reserves so global mixed rank cannot erase a target family."""
+    if family not in family_allocation:
+        return
+    heap = heaps.setdefault(family, [])
+    pool_size = max(k, max(1, family_allocation.get(family, 0)) * MIXED_POOL_MULTIPLIER)
+    if len(heap) < pool_size:
+        heapq.heappush(heap, entry)
+    elif entry[0] > heap[0][0]:
+        heapq.heapreplace(heap, entry)
+
+
+def _merge_mixed_reserves(
+    global_pool: list[dict],
+    family_heaps: dict[str, list[tuple[float, int, dict]]],
+) -> list[dict]:
+    """Union the global mixed pool with target-family reserves, de-duplicated by ticket."""
+    by_numbers = {tuple(item["numbers"]): item for item in global_pool}
+    for heap in family_heaps.values():
+        for _, _, item in heap:
+            key = tuple(item["numbers"])
+            current = by_numbers.get(key)
+            if current is None or float(item["within_type_score"]) > float(current["within_type_score"]):
+                by_numbers[key] = item
+    return sorted(by_numbers.values(), key=lambda item: float(item["within_type_score"]), reverse=True)
 
 
 def _flatten_type_heaps(heaps: dict[str, list[tuple[float, int, dict]]]) -> list[dict]:
@@ -286,23 +304,31 @@ def _top_portfolio_stream(
     subtype_diagnostics: dict[str, dict] | None = None,
     family_diagnostics: dict[str, dict] | None = None,
 ) -> tuple[list[dict], int, dict[str, int]]:
-    """Exhaustively score all candidates, then select exact dynamic type budgets."""
+    """Exhaustively score all candidates, retain type and target-family reserves, then select budgets."""
     allocation = _portfolio_allocation(profile, k)
+    family_allocation = family_allocation or {}
     pool_sizes = _type_pool_sizes(allocation, k)
     heaps: dict[str, list[tuple[float, int, dict]]] = {
         candidate_type: [] for candidate_type in PATTERN_TYPES
+    }
+    family_heaps: dict[str, list[tuple[float, int, dict]]] = {
+        family: [] for family in family_allocation
     }
     evaluated = 0
     for evaluated, candidate in enumerate(candidates, 1):
         record = structure_record(candidate, profile["latest_pattern_type"])
         item = _score_structure_record(record, profile, mixed_profile, weights)
         ranking_score = float(item["within_type_score"])
-        _push_type_candidate(
-            heaps,
-            pool_sizes,
-            item["pattern_type"],
-            (ranking_score, evaluated, item),
-        )
+        entry = (ranking_score, evaluated, item)
+        _push_type_candidate(heaps, pool_sizes, item["pattern_type"], entry)
+        if item["pattern_type"] == "mixed":
+            _push_family_candidate(
+                family_heaps,
+                family_allocation,
+                signature_family(item["subtype_signature"]),
+                entry,
+                k,
+            )
 
     pools = {
         candidate_type: [
@@ -310,6 +336,7 @@ def _top_portfolio_stream(
         ]
         for candidate_type in PATTERN_TYPES
     }
+    pools["mixed"] = _merge_mixed_reserves(pools["mixed"], family_heaps)
 
     selected_by_type: dict[str, list[dict]] = {
         "normal": _select_diverse_static(pools["normal"], allocation["normal"]),
@@ -329,8 +356,7 @@ def _top_portfolio_stream(
 
     if len(selected) != k:
         raise RuntimeError(
-            f"Type-budget selection produced {len(selected)} recommendations; expected {k}. "
-            f"allocation={allocation}"
+            f"Type-budget selection produced {len(selected)} recommendations; expected {k}. allocation={allocation}"
         )
 
     for rank, item in enumerate(selected, 1):
