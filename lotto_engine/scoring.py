@@ -8,16 +8,29 @@ from .features import PATTERN_FLAG_KEYS, extract_features, pattern_type
 from .profiles import FEATURE_GROUPS, group_score
 from .weights import load_weight_payload
 
+# Legacy v2.2 score is retained for diagnostics/backward-compatible tests.
 SCORE_WEIGHTS = {
-    # Calibrated from the v2.2 actual-vs-random component backtest.  Components
-    # which did not beat random are retained in the breakdown for diagnostics,
-    # but are not allowed to dilute the final empirical score.
     "outlier_survival_score": 0.45,
     "type_balance_score": 0.25,
     "transition_score": 0.15,
     "normal_structure_score": 0.15,
     "historical_pattern_score": 0.0,
     "number_dynamics_score": 0.0,
+}
+
+# Final production ranking deliberately excludes type balance and type transition.
+# Type transition belongs to the portfolio budget layer, not the within-type
+# structural ranking layer. Scores are only compared within the same pattern type.
+FINAL_STATIC_WEIGHTS = {
+    "normal": {
+        "normal_structure_score": 0.65,
+        "historical_pattern_score": 0.35,
+    },
+    "outlier": {
+        "normal_structure_score": 0.45,
+        "outlier_survival_score": 0.40,
+        "historical_pattern_score": 0.15,
+    },
 }
 
 
@@ -44,12 +57,8 @@ def _outlier_survival_score(
             min(1.0, float(profile["pattern_frequencies"][key]) / 0.10)
             for key in active
         ]
-        # Use both average and weakest support.  This avoids the former 90-point
-        # plateau when every active flag exceeded the 10% support threshold.
         support = 0.70 * float(np.mean(supports)) + 0.30 * float(min(supports))
         support_score = 45.0 + 45.0 * support - max(0, len(active) - 3) * 5.0
-    # Continuous structure fit supplies within-flag discrimination without
-    # changing the historical survival signal into a hard filter.
     return float(np.clip(
         0.70 * support_score + 0.20 * historical_score + 0.10 * normal_score,
         0.0,
@@ -105,14 +114,7 @@ def _number_dynamics_score(numbers: list[int], profile: dict) -> float:
     return float(np.mean(values))
 
 
-def score_candidate(numbers: list[int], profile: dict, weights: dict[str, float] | None = None) -> dict:
-    if weights is None:
-        payload = load_weight_payload()
-        weights = payload.get("final_weights") if payload else None
-    if weights is None:
-        from .config import BASE_WEIGHTS
-        weights = BASE_WEIGHTS
-
+def _candidate_components(numbers: list[int], profile: dict, weights: dict[str, float]) -> tuple[dict, dict, str, float, float]:
     features = extract_features(numbers, previous_draw=profile.get("latest_numbers"))
     components = {
         group: group_score(features, profile, group, recent=(group == "recent"))
@@ -121,8 +123,23 @@ def score_candidate(numbers: list[int], profile: dict, weights: dict[str, float]
     normal_score = sum(float(weights.get(group, 0.0)) * value for group, value in components.items())
     candidate_type = pattern_type(features)
     historical_score = _historical_pattern_score(features, profile)
+    return features, components, candidate_type, float(normal_score), float(historical_score)
+
+
+def score_candidate(numbers: list[int], profile: dict, weights: dict[str, float] | None = None) -> dict:
+    """Legacy general score retained for diagnostics and regression compatibility."""
+    if weights is None:
+        payload = load_weight_payload()
+        weights = payload.get("final_weights") if payload else None
+    if weights is None:
+        from .config import BASE_WEIGHTS
+        weights = BASE_WEIGHTS
+
+    features, components, candidate_type, normal_score, historical_score = _candidate_components(
+        numbers, profile, weights
+    )
     breakdown = {
-        "normal_structure_score": float(normal_score),
+        "normal_structure_score": normal_score,
         "outlier_survival_score": _outlier_survival_score(
             features, profile, historical_score, normal_score
         ),
@@ -138,9 +155,52 @@ def score_candidate(numbers: list[int], profile: dict, weights: dict[str, float]
     prediction_score = sum(SCORE_WEIGHTS[key] * value for key, value in breakdown.items())
     rounded = round(float(prediction_score), 4)
     return {
-        "numbers": numbers, "features": features, "components": components,
+        "numbers": numbers,
+        "features": features,
+        "components": components,
         "score_breakdown": {key: round(value, 4) for key, value in breakdown.items()},
-        "pattern_type": candidate_type, "prediction_score": rounded, "score": rounded,
+        "pattern_type": candidate_type,
+        "prediction_score": rounded,
+        "score": rounded,
+    }
+
+
+def score_static_candidate(numbers: list[int], profile: dict, weights: dict[str, float] | None = None) -> dict:
+    """Final within-type static ranking for normal/outlier candidates.
+
+    This intentionally excludes type rarity, type transition, and number dynamics.
+    Those signals must not be double-counted in both candidate ranking and portfolio
+    allocation. The result is meaningful only relative to candidates of the same
+    pattern_type.
+    """
+    if weights is None:
+        payload = load_weight_payload()
+        weights = payload.get("final_weights") if payload else None
+    if weights is None:
+        from .config import BASE_WEIGHTS
+        weights = BASE_WEIGHTS
+
+    features, components, candidate_type, normal_score, historical_score = _candidate_components(
+        numbers, profile, weights
+    )
+    outlier_score = _outlier_survival_score(features, profile, historical_score, normal_score)
+    breakdown = {
+        "normal_structure_score": normal_score,
+        "outlier_survival_score": outlier_score,
+        "historical_pattern_score": historical_score,
+    }
+    static_weights = FINAL_STATIC_WEIGHTS.get(candidate_type, FINAL_STATIC_WEIGHTS["normal"])
+    static_score = sum(static_weights.get(key, 0.0) * value for key, value in breakdown.items())
+    rounded = round(float(static_score), 4)
+    return {
+        "numbers": numbers,
+        "features": features,
+        "components": components,
+        "score_breakdown": {key: round(value, 4) for key, value in breakdown.items()},
+        "pattern_type": candidate_type,
+        "static_score": rounded,
+        "prediction_score": rounded,
+        "score": rounded,
     }
 
 
